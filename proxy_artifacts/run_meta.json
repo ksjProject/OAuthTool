@@ -1,0 +1,15 @@
+{
+  "started_at": "2025-10-20T19:08:20.152304+00:00",
+  "finished_at": "2025-10-20T19:08:22.234878+00:00",
+  "packets_saved": {
+    "requests": 0,
+    "responses": 0,
+    "errors": 0
+  },
+  "capture_mode": "internal",
+  "selenium_wire_active": false,
+  "listen_host": "127.0.0.1",
+  "listen_port": 8080,
+  "ssl_insecure": true,
+  "login_url": null
+}

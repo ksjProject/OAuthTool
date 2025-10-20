@@ -11,10 +11,11 @@ OAuth Vuln Scanner (CLI)
 - 모드:
     1) Proxy Capture
     2) Browser Session Capture
-    3) Proxy Setup Assistant   ← (신규) 프록시/CA 설정 자동화 + (추가) docker-compose.yml 자동 수정
+    3) Proxy Setup Assistant        ← OS별 시스템 프록시/mitm CA + docker-compose 자동 수정 + 컨테이너 주입 + (수정 시) up -d 자동
+    4) Proxy Setup Revert           ← 시스템 프록시/mitm CA/컨테이너 주입/compose 수정 원복
 
-- CA 체크/설정:
-    Proxy Capture에서 필요 시 자동 생성·신뢰/원복(사용자 동의 후 실행)
+주의:
+- 3번은 “설정만” 수행합니다(원복 묻지 않음). 원복은 4번에서 따로 실행하세요.
 """
 import base64
 import datetime as dt
@@ -420,28 +421,24 @@ def trust_mitm_ca() -> None:
         sys.exit(3)
 
     if SELECTED_OS == "windows":
-        cmd = ["certutil", "-addstore", "-f", "ROOT", cer]
-        rc = _run(cmd, check=True)
+        rc = _run(["certutil", "-addstore", "-f", "ROOT", cer], check=True)
         if rc != 0:
             print("[경고] Windows에 CA 추가 실패. 관리자 PowerShell로 다시 시도해 주세요.")
             sys.exit(3)
     elif SELECTED_OS == "macos":
-        cmd = ["sudo", "security", "add-trusted-cert", "-d", "-r", "trustRoot",
-               "-k", "/Library/Keychains/System.keychain", pem]
-        rc = _run(cmd, check=True)
+        rc = _run(["sudo", "security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k",
+                   "/Library/Keychains/System.keychain", pem], check=True)
         if rc != 0:
             print("[경고] macOS에 CA 추가 실패.")
             sys.exit(3)
     elif SELECTED_OS == "ubuntu":
-        dst = "/usr/local/share/ca-certificates/mitmproxy-ca.crt"
-        rc = _run(["sudo", "cp", pem, dst], check=True)
+        rc = _run(["sudo", "cp", pem, "/usr/local/share/ca-certificates/mitmproxy-ca.crt"], check=True)
         rc |= _run(["sudo", "update-ca-certificates"], check=True)
         if rc != 0:
             print("[경고] Debian/Ubuntu에 CA 추가 실패.")
             sys.exit(3)
     elif SELECTED_OS == "rhel":
-        dst = "/etc/pki/ca-trust/source/anchors/mitmproxy-ca.crt"
-        rc = _run(["sudo", "cp", pem, dst], check=True)
+        rc = _run(["sudo", "cp", pem, "/etc/pki/ca-trust/source/anchors/mitmproxy-ca.crt"], check=True)
         rc |= _run(["sudo", "update-ca-trust"], check=True)
         if rc != 0:
             print("[경고] RHEL/CentOS/Fedora에 CA 추가 실패.")
@@ -451,13 +448,12 @@ def trust_mitm_ca() -> None:
         sys.exit(3)
 
 
-def untrust_mitm_ca() -> None:
+def untrust_mitm_ca(force: bool = True) -> None:
     """OS에 맞춰 mitm CA 신뢰 제거."""
     global SELECTED_OS
     if SELECTED_OS == "windows":
-        cmd = ["powershell", "-Command",
-               "Get-ChildItem Cert:\\LocalMachine\\Root | Where-Object { $_.Subject -like '*mitmproxy*' } | Remove-Item -Force"]
-        _run(cmd)
+        _run(["powershell", "-Command",
+              "Get-ChildItem Cert:\\LocalMachine\\Root | Where-Object { $_.Subject -like '*mitmproxy*' } | Remove-Item -Force"])
     elif SELECTED_OS == "macos":
         _run(["sudo", "security", "delete-certificate", "-c", "mitmproxy", "/Library/Keychains/System.keychain"])
     elif SELECTED_OS == "ubuntu":
@@ -496,6 +492,21 @@ def _win_proxy_notify() -> None:
         ctypes.windll.wininet.InternetSetOptionW(0, INTERNET_OPTION_REFRESH, 0, 0)
     except Exception:
         pass
+
+
+def windows_proxy_disable():
+    import winreg
+    path = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+    with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, path, 0, winreg.KEY_SET_VALUE) as k:
+        try:
+            winreg.SetValueEx(k, "ProxyEnable", 0, winreg.REG_DWORD, 0)
+            try:
+                winreg.DeleteValue(k, "ProxyServer")
+            except FileNotFoundError:
+                pass
+        except Exception:
+            pass
+    _win_proxy_notify()
 
 
 def _win_proxy_snapshot() -> Dict[str, Any]:
@@ -571,56 +582,55 @@ class SystemProxyManager:
             _win_proxy_apply(self.host, self.port)
             print("[proxy] Windows 시스템 프록시를 자동 설정했습니다.")
         elif self.os == "macos":
-            if ask_yes_no("macOS 시스템 프록시를 자동 설정할까요?", default=True):
-                iface = input(f"네트워크 서비스 이름 입력 [기본 {self.macos_iface}]: ").strip() or self.macos_iface
-                cmds = [
-                    ["sudo", "networksetup", "-setwebproxy", iface, self.host, str(self.port)],
-                    ["sudo", "networksetup", "-setsecurewebproxy", iface, self.host, str(self.port)],
-                    ["sudo", "networksetup", "-setwebproxystate", iface, "on"],
-                    ["sudo", "networksetup", "-setsecurewebproxystate", iface, "on"],
-                ]
-                ok = True
-                for c in cmds:
-                    if _run(c) != 0:
-                        ok = False
-                if ok:
-                    self.did_configure_nonwin = True
-                    self.macos_iface = iface
-                    print("[proxy] macOS 시스템 프록시 설정 완료.")
-                else:
-                    print("[경고] 일부 명령 실패. 수동 확인이 필요할 수 있습니다.")
+            # 비대화형 기본 적용 (인터페이스 기본값 사용)
+            iface = self.macos_iface
+            cmds = [
+                ["sudo", "networksetup", "-setwebproxy", iface, self.host, str(self.port)],
+                ["sudo", "networksetup", "-setsecurewebproxy", iface, self.host, str(self.port)],
+                ["sudo", "networksetup", "-setwebproxystate", iface, "on"],
+                ["sudo", "networksetup", "-setsecurewebproxystate", iface, "on"],
+            ]
+            ok = True
+            for c in cmds: ok &= (_run(c) == 0)
+            if ok:
+                self.did_configure_nonwin = True
+                print("[proxy] macOS 시스템 프록시 설정 완료.")
         elif self.os in ("ubuntu", "rhel"):
-            if ask_yes_no("GNOME 시스템 프록시를 자동 설정할까요?", default=False):
-                cmds = [
-                    ["gsettings", "set", "org.gnome.system.proxy", "mode", "manual"],
-                    ["gsettings", "set", "org.gnome.system.proxy.http", "host", self.host],
-                    ["gsettings", "set", "org.gnome.system.proxy.http", "port", str(self.port)],
-                    ["gsettings", "set", "org.gnome.system.proxy.https", "host", self.host],
-                    ["gsettings", "set", "org.gnome.system.proxy.https", "port", str(self.port)],
-                ]
-                ok = True
-                for c in cmds:
-                    if _run(c) != 0:
-                        ok = False
-                if ok:
-                    self.did_configure_nonwin = True
-                    print("[proxy] GNOME 시스템 프록시 설정 완료.")
-                else:
-                    print("[경고] 일부 명령 실패. 데스크톱 환경/권한을 확인하세요.")
-        else:
-            print("[안내] 시스템 프록시 자동 설정은 생략합니다.")
+            # GNOME 환경이면 설정. 서버 환경이면 실패해도 무시.
+            cmds = [
+                ["gsettings", "set", "org.gnome.system.proxy", "mode", "manual"],
+                ["gsettings", "set", "org.gnome.system.proxy.http", "host", self.host],
+                ["gsettings", "set", "org.gnome.system.proxy.http", "port", str(self.port)],
+                ["gsettings", "set", "org.gnome.system.proxy.https", "host", self.host],
+                ["gsettings", "set", "org.gnome.system.proxy.https", "port", str(self.port)],
+            ]
+            ok = True
+            for c in cmds: ok &= (_run(c) == 0)
+            if ok:
+                self.did_configure_nonwin = True
+                print("[proxy] GNOME 시스템 프록시 설정 완료.")
+
+    def disable_all(self) -> None:
+        # 4번(원복)에서 사용: 백업 없어도 강제 해제
+        if self.os == "windows":
+            windows_proxy_disable()
+            print("[proxy] Windows 시스템 프록시 비활성화.")
+        elif self.os == "macos":
+            _run(["sudo", "networksetup", "-setwebproxystate", self.macos_iface, "off"])
+            _run(["sudo", "networksetup", "-setsecurewebproxystate", self.macos_iface, "off"])
+            print("[proxy] macOS 시스템 프록시 비활성화.")
+        elif self.os in ("ubuntu", "rhel"):
+            _run(["gsettings", "set", "org.gnome.system.proxy", "mode", "none"])
+            print("[proxy] GNOME 시스템 프록시 비활성화.")
 
     def disable(self) -> None:
+        # 1번 종료 시 복원용(백업 기반)
         if self.os == "windows" and self.backup is not None:
             _win_proxy_restore(self.backup)
             print("[proxy] 이전 프록시 설정을 복원했습니다.")
         elif self.os == "macos" and self.did_configure_nonwin:
-            cmds = [
-                ["sudo", "networksetup", "-setwebproxystate", self.macos_iface, "off"],
-                ["sudo", "networksetup", "-setsecurewebproxystate", self.macos_iface, "off"],
-            ]
-            for c in cmds:
-                _run(c)
+            _run(["sudo", "networksetup", "-setwebproxystate", self.macos_iface, "off"])
+            _run(["sudo", "networksetup", "-setsecurewebproxystate", self.macos_iface, "off"])
             print("[proxy] macOS 시스템 프록시를 비활성화했습니다.")
         elif self.os in ("ubuntu", "rhel") and self.did_configure_nonwin:
             _run(["gsettings", "set", "org.gnome.system.proxy", "mode", "none"])
@@ -990,9 +1000,9 @@ def run_browser_session_capture(target: str) -> None:
         print(f"[완료] 산출물: {aw.outdir}")
 
 
-# ====== (신규) docker-compose.yml 자동 수정 유틸 ======
+# ====== (신규) docker-compose.yml 자동 수정/원복 유틸 ======
 def _compose_find_path() -> Optional[Path]:
-    for name in ("docker-compose.yml", "docker-compose.yaml"):
+    for name in ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"):
         p = Path(name).resolve()
         if p.exists():
             return p
@@ -1057,14 +1067,19 @@ def _no_proxy_to_java_hosts(no_proxy: str) -> str:
     return "|".join(parts) if parts else "localhost|127.*|::1"
 
 
-def compose_modify_services(compose_path: Path, proxy_host: str, proxy_port: int) -> None:
+def compose_modify_services(compose_path: Path, proxy_host: str, proxy_port: int) -> List[str]:
+    """
+    compose 파일을 수정하고, 수정된 서비스명 목록을 반환.
+    - HTTP_PROXY/HTTPS_PROXY/NO_PROXY/JAVA_TOOL_OPTIONS/REQUESTS_CA_BUNDLE 주입
+    """
     data = _compose_load(compose_path)
     services = (data.get("services") or {})
     if not isinstance(services, dict) or not services:
         print("[compose] services 블록을 찾을 수 없습니다. 수정 없이 건너뜁니다.")
-        return
+        return []
 
     print("[compose] 발견한 서비스:", ", ".join(services.keys()))
+    print("설명: 프록시를 적용할 서비스 이름을 쉼표로 입력하거나 Enter로 전체 적용합니다.")
     pick = input("수정할 서비스 이름들(쉼표, 기본=all): ").strip()
     if not pick or pick.lower() in ("all", "*"):
         target_names = list(services.keys())
@@ -1077,113 +1092,102 @@ def compose_modify_services(compose_path: Path, proxy_host: str, proxy_port: int
     proxy_url = f"http://{proxy_host}:{proxy_port}"
     default_no_proxy = "localhost,127.0.0.1,::1,nginx,django,spring"
 
+    print("설명: 프록시를 타지 않을 내부 호스트 목록입니다(콤마로 구분).")
     no_proxy = input(f"NO_PROXY 값 입력 [기본 {default_no_proxy}]: ").strip() or default_no_proxy
+    print("설명: Java(Spring) 앱은 JVM 인자도 필요합니다. 해당 서비스명을 쉼표로 입력하거나 빈칸이면 자동 감지(container_name에 'spring' 포함 시 적용).")
     java_pick = input("Java(Spring) 서비스 이름들(쉼표, 없으면 엔터): ").strip()
     java_targets = [s.strip() for s in java_pick.split(",") if s.strip()] if java_pick else []
 
+    modified: List[str] = []
     for name in target_names:
-        svc = services.get(name, {})
+        svc = services.get(name, {}) or {}
         env = _env_list_to_dict(svc.get("environment", {}))
 
         env["HTTP_PROXY"] = proxy_url
         env["HTTPS_PROXY"] = proxy_url
         env["NO_PROXY"] = _merge_no_proxy(env.get("NO_PROXY", ""), no_proxy)
 
-        if name in java_targets:
+        # Python requests 호환
+        env.setdefault("REQUESTS_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt")
+
+        # Java(Spring) 추정 적용
+        c_name = str(svc.get("container_name", ""))
+        if name in java_targets or ("spring" in c_name.lower()):
             nph = _no_proxy_to_java_hosts(env["NO_PROXY"])
             jtool = env.get("JAVA_TOOL_OPTIONS", "")
             inject = f"-Dhttp.proxyHost={proxy_host} -Dhttp.proxyPort={proxy_port} -Dhttps.proxyHost={proxy_host} -Dhttps.proxyPort={proxy_port} -Dhttp.nonProxyHosts={nph}"
             if inject not in jtool:
                 env["JAVA_TOOL_OPTIONS"] = (jtool + " " + inject).strip()
 
-        # 다시 할당(리스트 대신 dict로 유지)
+        # 재할당
         svc["environment"] = env
         services[name] = svc
+        modified.append(name)
 
     data["services"] = services
     _compose_dump(compose_path, data)
     print(f"[compose] docker-compose 수정 완료 → {compose_path}")
     print("")
-    print("[원복 가이드]")
-    print("  Linux/macOS:")
-    print("    rm -f docker-compose.yml && mv docker-compose.yml.bak docker-compose.yml")
-    print("  Windows PowerShell:")
-    print("    Remove-Item docker-compose.yml")
-    print("    Rename-Item docker-compose.yml.bak docker-compose.yml")
+    print("[원복 가이드(수동)]")
+    print("  Linux/macOS: rm -f docker-compose.yml && mv docker-compose.yml.bak docker-compose.yml")
+    print("  Windows PowerShell: Remove-Item docker-compose.yml; Rename-Item docker-compose.yml.bak docker-compose.yml")
     print("")
-
-    # 적용 여부 확인
-    if ask_yes_no("지금 바로 docker compose를 갱신(재배포)할까요? (up -d)", default=False):
-        # 플러그인/별도 바이너리 둘 다 지원
-        if shutil.which("docker") and _run(["docker", "compose", "version"]) == 0:
-            _run(["docker", "compose", "up", "-d"])
-        elif shutil.which("docker-compose"):
-            _run(["docker-compose", "up", "-d"])
-        else:
-            print("[경고] docker compose/ docker-compose 명령을 찾지 못했습니다. 수동으로 배포하세요.")
+    return modified
 
 
-# ====== (신규) Proxy Setup Assistant ======
-def _tcp_test(host: str, port: int, timeout: float = 2.0) -> bool:
+def compose_revert_auto(compose_path: Path) -> Optional[Path]:
+    """
+    docker-compose.*에 대응되는 최신 .bak를 찾아 원복. 성공 시 원본 경로 반환.
+    """
+    candidates = [compose_path.with_suffix(compose_path.suffix + ".bak")]
+    # timestamped .*.bak도 탐색
+    for p in compose_path.parent.glob(compose_path.name + ".*.bak"):
+        candidates.append(p)
+    # 최신 .bak 우선
+    candidates = [p for p in candidates if p.exists()]
+    if not candidates:
+        print("[compose] 원복할 .bak를 찾지 못했습니다.")
+        return None
+    latest = max(candidates, key=lambda p: p.stat().st_mtime)
     try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
+        if compose_path.exists():
+            compose_path.unlink()
+        shutil.move(str(latest), str(compose_path))
+        print(f"[compose] 원복 완료: {compose_path}")
+        return compose_path
+    except Exception as e:
+        print(f"[경고] compose 원복 실패: {e}")
+        return None
 
 
-def create_revert_script(os_type: str, proxy_host: str, proxy_port: int) -> Path:
-    ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    if os_type == "windows":
-        path = Path(f"proxy_revert_{ts}.ps1").resolve()
-        content = [
-            '$path = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings"',
-            'Set-ItemProperty -Path $path -Name ProxyEnable -Type DWord -Value 0',
-            'Remove-ItemProperty -Path $path -Name ProxyServer -ErrorAction SilentlyContinue',
-            r"Get-ChildItem Cert:\LocalMachine\Root | Where-Object { $_.Subject -like '*mitmproxy*' } | Remove-Item -Force",
-            'Write-Host "프록시 비활성화 및 mitmproxy CA 제거 완료"',
-        ]
-        path.write_text("\n".join(content), encoding="utf-8")
-        return path
-    else:
-        path = Path(f"proxy_revert_{ts}.sh").resolve()
-        lines = ["#!/usr/bin/env bash", "set -e"]
-        if os_type == "macos":
-            lines += [
-                'IFACE="${1:-Wi-Fi}"',
-                'networksetup -setwebproxystate "$IFACE" off || true',
-                'networksetup -setsecurewebproxystate "$IFACE" off || true',
-                'security delete-certificate -c mitmproxy /Library/Keychains/System.keychain || true',
-                'echo "프록시 비활성화 및 mitmproxy CA 제거 완료"',
-            ]
-        elif os_type == "ubuntu":
-            lines += [
-                "gsettings set org.gnome.system.proxy mode 'none' || true",
-                "rm -f /usr/local/share/ca-certificates/mitmproxy-ca.crt || true",
-                "update-ca-certificates --fresh || true",
-                'echo "프록시 비활성화 및 mitmproxy CA 제거 완료"',
-            ]
-        elif os_type == "rhel":
-            lines += [
-                "gsettings set org.gnome.system.proxy mode 'none' || true",
-                "rm -f /etc/pki/ca-trust/source/anchors/mitmproxy-ca.crt || true",
-                "update-ca-trust || true",
-                'echo "프록시 비활성화 및 mitmproxy CA 제거 완료"',
-            ]
-        else:
-            lines += [
-                "echo '수동 환경입니다. 프록시는 수동으로 해제하고, CA는 시스템 신뢰 저장소에서 제거하세요.'",
-            ]
-        path.write_text("\n".join(lines), encoding="utf-8")
-        try:
-            os.chmod(path, 0o755)
-        except Exception:
-            pass
-        return path
-
-
+# ====== (신규) 컨테이너 주입/원복 유틸 ======
 def docker_available() -> bool:
     return shutil.which("docker") is not None
+
+
+def _docker_ps_service_map() -> Dict[str, List[str]]:
+    """
+    실행 중 컨테이너의 compose 서비스명 -> 컨테이너ID 목록 맵.
+    """
+    out: Dict[str, List[str]] = {}
+    if not docker_available():
+        return out
+    # 서비스 라벨 기준으로 뽑기
+    try:
+        # 모든 컨테이너 ID
+        res = subprocess.run(["docker", "ps", "-q"], stdout=subprocess.PIPE, text=True)
+        ids = [x for x in res.stdout.strip().splitlines() if x.strip()]
+        for cid in ids:
+            # 라벨 조회
+            lr = subprocess.run(["docker", "inspect", "-f", "{{ index .Config.Labels \"com.docker.compose.service\"}}", cid],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            svc = lr.stdout.strip()
+            if not svc:
+                continue
+            out.setdefault(svc, []).append(cid)
+    except Exception:
+        pass
+    return out
 
 
 def docker_configure_container(container: str, proxy_host: str, proxy_port: int, no_proxy: str) -> None:
@@ -1209,16 +1213,39 @@ def docker_configure_container(container: str, proxy_host: str, proxy_port: int,
         '(command -v update-ca-trust >/dev/null && update-ca-trust) || true'
     ]
     _run(cmd_fetch)
-    print(f"[docker] 컨테이너 '{container}'에 프록시/CA 설정을 적용했습니다. 컨테이너/서비스 재시작이 필요할 수 있습니다.")
+    print(f"[docker] 컨테이너 '{container}'에 프록시/CA 설정을 적용했습니다.")
+
+
+def docker_revert_container(container: str) -> None:
+    """컨테이너 내부 프록시 주입/mitm CA 제거."""
+    cmd = [
+        "docker", "exec", container, "/bin/sh", "-lc",
+        'rm -f /etc/profile.d/proxy.sh || true; '
+        'rm -f /usr/local/share/ca-certificates/mitmproxy-ca.crt || true; '
+        '(command -v update-ca-certificates >/dev/null && update-ca-certificates --fresh) || '
+        '(command -v update-ca-trust >/dev/null && update-ca-trust) || true'
+    ]
+    _run(cmd)
+    print(f"[docker] 컨테이너 '{container}'의 프록시/CA 주입을 제거했습니다.")
+
+
+# ====== (개편) Proxy Setup Assistant (3번) ======
+def _tcp_test(host: str, port: int, timeout: float = 2.0) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 def run_proxy_setup_assistant() -> None:
     """
     서비스 클라이언트(서버)에서 실행해, 지정한 Proxy Capture(진단 PC)의 IP:PORT로
-    시스템 프록시/CA 신뢰를 자동 적용하고 테스트/롤백 스크립트를 제공.
-    또한 동일 경로의 docker-compose.yml이 있으면 .bak 백업 후 자동 수정(주입) 지원.
+    시스템 프록시/CA 신뢰를 자동 적용하고 docker-compose를 감지하면 .bak 백업 후 자동 수정.
+    실행 중 컨테이너에도 자동 주입. compose 수정 시에는 up -d 자동 실행.
     """
     print("\n[Proxy Setup Assistant]")
+    print("설명: 진단 PC의 Proxy Capture(IP:PORT)로 이 시스템/도커 서비스를 연결시키는 모드입니다.")
     proxy_host = input("진단 PC의 프록시 호스트/IP (예: 10.0.0.5): ").strip()
     if not proxy_host:
         print("[오류] 호스트가 필요합니다.")
@@ -1234,67 +1261,117 @@ def run_proxy_setup_assistant() -> None:
         print(f"[연결 확인] {proxy_host}:{proxy_port} TCP 연결 성공.")
     else:
         print(f"[경고] {proxy_host}:{proxy_port} 에 연결할 수 없습니다. 방화벽/네트워크를 확인하세요.")
-        if not ask_yes_no("계속 진행하시겠습니까?", default=False):
-            return
 
-    # 시스템 프록시 설정
+    # 시스템 프록시 설정 (비대화형 적용)
     spm = SystemProxyManager(proxy_host, proxy_port)
     spm.enable()
 
     # mitm CA 다운로드 & 신뢰
-    if ask_yes_no("이 프록시의 mitm CA를 다운로드하여 신뢰로 추가할까요?", default=True):
-        ok = fetch_mitm_ca_via_proxy(proxy_host, proxy_port)
-        if ok:
-            trust_mitm_ca()
-        else:
-            print("[안내] CA 다운로드에 실패하여 신뢰 추가를 생략합니다.")
+    ca_downloaded = fetch_mitm_ca_via_proxy(proxy_host, proxy_port)
+    if ca_downloaded:
+        trust_mitm_ca()
+    else:
+        print("[경고] 프록시 경유 mitm CA 다운로드 실패. system 신뢰 추가를 생략했습니다.")
 
-    # ===== docker-compose.yml 자동 수정 =====
+    # ===== docker-compose.* 자동 수정 + .bak =====
     compose_path = _compose_find_path()
+    modified_services: List[str] = []
     if compose_path:
         print(f"[compose] 감지: {compose_path.name}")
-        if ask_yes_no("docker-compose.yml에 프록시 설정을 주입할까요?", default=True):
-            _compose_backup(compose_path)
-            # 사용자에게 프록시 정보 재확인(의도치 않은 값 방지)
-            proxy_host2 = input(f"주입할 프록시 호스트 [기본 {proxy_host}]: ").strip() or proxy_host
+        compose_bak = _compose_backup(compose_path)
+        # compose 수정
+        modified_services = compose_modify_services(compose_path, proxy_host, proxy_port)
+        # 수정이 있었다면 up -d 자동
+        if modified_services:
+            if shutil.which("docker") and _run(["docker", "compose", "version"]) == 0:
+                _run(["docker", "compose", "up", "-d"])
+            elif shutil.which("docker-compose"):
+                _run(["docker-compose", "up", "-d"])
+            else:
+                print("[경고] docker compose/ docker-compose 명령을 찾지 못했습니다. 수동으로 배포하세요.")
+        else:
+            # 수정 없으면 .bak 원복
             try:
-                proxy_port2 = int(input(f"주입할 프록시 포트 [기본 {proxy_port}]: ").strip() or str(proxy_port))
-            except ValueError:
-                proxy_port2 = proxy_port
-            compose_modify_services(compose_path, proxy_host2, proxy_port2)
-        else:
-            print("[compose] 파일 수정은 건너뜁니다.")
+                if compose_bak.exists():
+                    compose_bak.unlink()
+            except Exception:
+                pass
     else:
-        print("[compose] 현재 경로에서 docker-compose.yml을 찾지 못했습니다. (자동 수정 생략)")
+        print("[compose] 현재 경로에서 docker-compose 파일을 찾지 못했습니다. (자동 수정 생략)")
 
-    # Docker 컨테이너 설정(선택)
-    if docker_available() and ask_yes_no("실행 중인 Docker 컨테이너에도 프록시/CA를 적용할까요?", default=False):
-        container = input("컨테이너 이름/ID: ").strip()
-        if container:
-            no_proxy_default = "localhost,127.0.0.1,::1"
-            no_proxy = input(f"NO_PROXY 목록 입력 [기본 {no_proxy_default}]: ").strip() or no_proxy_default
-            docker_configure_container(container, proxy_host, proxy_port, no_proxy)
+    # ===== 실행 중 컨테이너 주입 (자동) =====
+    if docker_available():
+        # 우선 compose 서비스명 기반으로 컨테이너 매칭
+        svc_map = _docker_ps_service_map()  # service -> [containerIDs]
+        targets: List[str] = []
+        if modified_services:
+            for s in modified_services:
+                targets.extend(svc_map.get(s, []))
+        if not targets:
+            # 사용자가 직접 입력하도록 보완
+            print("설명: 실행 중 컨테이너에 프록시/CA를 주입합니다. 자동 탐지에 실패하면 이름/ID를 입력하세요(쉼표 가능).")
+            manual = input("컨테이너 이름/ID들 (엔터=건너뜀): ").strip()
+            if manual:
+                targets = [x.strip() for x in manual.split(",") if x.strip()]
+        if targets:
+            no_proxy_default = "localhost,127.0.0.1,::1,nginx,django,spring"
+            for cid in targets:
+                docker_configure_container(cid, proxy_host, proxy_port, no_proxy_default)
         else:
-            print("[안내] 컨테이너 식별자가 없어 Docker 단계는 건너뜁니다.")
-    elif not docker_available():
+            print("[docker] 주입 대상 컨테이너를 찾지 못해 컨테이너 주입을 생략했습니다.")
+    else:
         print("[안내] Docker CLI가 감지되지 않아 Docker 설정 단계는 건너뜁니다.")
 
-    # 간단 테스트 (HTTP)
-    if ask_yes_no("프록시 경유 HTTP 연결을 간단히 테스트할까요?(http://example.com)", default=True):
-        try:
-            import urllib.request
-            proxy_url = f"http://{proxy_host}:{proxy_port}"
-            opener = urllib.request.build_opener(
-                urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url})
-            )
-            with opener.open("http://example.com", timeout=10) as resp:
-                print(f"[테스트] HTTP 상태: {resp.status}")
-        except Exception as e:
-            print(f"[경고] HTTP 테스트 실패: {e}")
+    print("[완료] Proxy Setup Assistant 작업을 마쳤습니다. 이제 1) Proxy Capture로 캡처를 시작할 수 있습니다.")
 
-    # 롤백 스크립트 생성
-    revert_path = create_revert_script((SELECTED_OS or "other").lower(), proxy_host, proxy_port)
-    print(f"[준비 완료] 프록시/CA 설정을 적용했습니다. 필요 시 다음 스크립트로 원복하세요:\n  {revert_path}")
+
+# ====== (신규) Proxy Setup Revert (4번) ======
+def run_proxy_setup_revert() -> None:
+    """
+    시스템 프록시 비활성화, mitm CA 제거, docker-compose 원복(+ up -d),
+    실행 중 컨테이너의 프록시/CA 주입 제거를 자동 수행.
+    """
+    print("\n[Proxy Setup Revert]")
+    print("설명: 3번에서 적용한 프록시/CA/compose/컨테이너 주입을 원래대로 되돌립니다.")
+
+    # 1) 시스템 프록시 비활성화
+    spm = SystemProxyManager("0.0.0.0", 0)
+    spm.disable_all()
+
+    # 2) mitm CA 제거
+    untrust_mitm_ca()
+
+    # 3) compose 원복(+ up -d)
+    compose_path = _compose_find_path()
+    if compose_path:
+        reverted = compose_revert_auto(compose_path)
+        if reverted:
+            if shutil.which("docker") and _run(["docker", "compose", "version"]) == 0:
+                _run(["docker", "compose", "up", "-d"])
+            elif shutil.which("docker-compose"):
+                _run(["docker-compose", "up", "-d"])
+            else:
+                print("[경고] docker compose/ docker-compose 명령을 찾지 못했습니다. 수동으로 배포하세요.")
+    else:
+        print("[compose] 현재 경로에서 docker-compose 파일을 찾지 못했습니다. (원복 생략)")
+
+    # 4) 실행 중 컨테이너의 주입 제거 (전체 대상)
+    if docker_available():
+        svc_map = _docker_ps_service_map()
+        all_containers = [cid for ids in svc_map.values() for cid in ids]
+        if not all_containers:
+            # compose를 안 쓰거나 라벨 없는 컨테이너도 대비: docker ps 전체 제거 시도 옵션 제공
+            res = subprocess.run(["docker", "ps", "-q"], stdout=subprocess.PIPE, text=True)
+            all_containers = [x for x in res.stdout.strip().splitlines() if x.strip()]
+        if all_containers:
+            for cid in all_containers:
+                docker_revert_container(cid)
+        else:
+            print("[docker] 실행 중 컨테이너가 없거나 식별하지 못했습니다.")
+    else:
+        print("[안내] Docker CLI가 감지되지 않아 컨테이너 원복 단계는 건너뜁니다.")
+
+    print("[완료] Proxy Setup Revert 작업을 마쳤습니다.")
 
 
 # ====== OS 선택 & 메인 ======
@@ -1318,9 +1395,9 @@ def main() -> None:
     SELECTED_OS = choose_os()
     print("\n=== OAuth Vuln Scanner ===")
     print("산출물 폴더: Proxy=./proxy_artifacts, Browser=./browser_artifacts")
-    print("모드 선택: 1) Proxy Capture  2) Browser Session Capture  3) Proxy Setup Assistant  q) 종료")
+    print("모드 선택: 1) Proxy Capture  2) Browser Session Capture  3) Proxy Setup Assistant  4) Proxy Setup Revert  q) 종료")
 
-    choice = input("선택 입력 [1/2/3/q]: ").strip().lower()
+    choice = input("선택 입력 [1/2/3/4/q]: ").strip().lower()
     if choice in ("q", "quit"):
         print("종료합니다.")
         return
@@ -1335,6 +1412,7 @@ def main() -> None:
             listen_port = 8080
         ssl_insecure = ask_yes_no("서버 인증서 검증을 생략하시겠습니까?", default=False)
 
+        print("설명: 로그인 플로우를 캡처하려면 브라우저로 로그인 페이지를 띄울 수 있습니다.")
         open_login = ask_yes_no("로그인 페이지가 필요합니까?", default=True)
         login_url: Optional[str] = None
         if open_login:
@@ -1354,6 +1432,10 @@ def main() -> None:
 
     if choice == "3":
         run_proxy_setup_assistant()
+        return
+
+    if choice == "4":
+        run_proxy_setup_revert()
         return
 
     print("알 수 없는 선택입니다. 다시 실행하세요.")
