@@ -13,3 +13,11 @@ browser_artifacts/
 *.pcap
 *.jsonl
 *.log
+
+# artifacts (do not commit)
+proxy_artifacts/
+browser_artifacts/
+*.jsonl
+*.log
+*.har
+*.pcap
