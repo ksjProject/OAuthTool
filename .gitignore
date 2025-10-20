@@ -1,0 +1,7 @@
+
+proxy_artifacts/
+browser_artifacts/
+*.har
+*.pcap
+*.jsonl
+*.log

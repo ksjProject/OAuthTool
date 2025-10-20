@@ -659,17 +659,22 @@ def _wait_proxy_ready(host: str, port: int, proc, log_path: Path, timeout: float
 # ====== 캡처 실행 (Proxy/Browser) ======
 def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, login_url: Optional[str]) -> None:
     """Proxy Capture"""
+    # 1) 필요한 패키지 선제 설치 (프록시/CA 적용 이전)
     mitmdump = ensure_mitmdump_available()
+    if login_url:
+        ensure_pip_package("selenium", "selenium")
+
+    # 2) CA 파일 확보 및 신뢰 추가
     if not (CA_PEM.exists() or CA_CER.exists()):
         ensure_mitm_ca_files(mitmdump)
-    # 보수적으로 항상 질의 후 신뢰 추가
-    trust_mitm_ca()
+    trust_mitm_ca()  # 사용자 동의 후
 
     aw = ArtifactWriter(PROXY_ARTIFACT_DIR, "Proxy Capture")
 
     tmp_flows = Path(tempfile.mkstemp(prefix="flows_", suffix=".mitm")[1])
     tmp_log = Path(tempfile.mkstemp(prefix="mitmdump_", suffix=".log")[1])
 
+    # 3) 시스템 프록시 적용
     spm = SystemProxyManager(listen_host, listen_port)
     spm.enable()
 
@@ -694,7 +699,6 @@ def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, lo
     driver = None
     try:
         if login_url:
-            ensure_pip_package("selenium", "selenium")
             from selenium.webdriver.chrome.options import Options as ChromeOptions  # type: ignore
             from selenium import webdriver  # type: ignore
             from selenium.common.exceptions import WebDriverException  # type: ignore
@@ -741,7 +745,7 @@ def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, lo
                 pass
 
     try:
-        ensure_pip_package("mitmproxy", "mitmproxy")
+        # mitmproxy 모듈은 mitmproxy 설치 시 함께 들어옵니다(이미 설치됨).
         from mitmproxy.io import FlowReader
         from http.cookies import SimpleCookie
         if not tmp_flows.exists() or tmp_flows.stat().st_size == 0:
@@ -864,6 +868,7 @@ def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, lo
 def run_browser_session_capture(target: str) -> None:
     """Browser Session Capture"""
     aw = ArtifactWriter(BROWSER_ARTIFACT_DIR, "Browser Session Capture")
+    # 프록시 없이 바로 선제 설치
     ensure_pip_package("selenium", "selenium")
     try:
         from selenium.webdriver.chrome.options import Options as ChromeOptions  # type: ignore
@@ -1020,14 +1025,13 @@ def _compose_backup(path: Path) -> Path:
 
 
 def _compose_dump(path: Path, data: Dict[str, Any]) -> None:
-    ensure_pip_package("pyyaml", "yaml")
+    # pyyaml 설치는 Proxy Setup Assistant 진입 직후 선제 수행하므로, 여기선 사용만
     import yaml  # type: ignore
     with path.open("w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, sort_keys=False)
 
 
 def _compose_load(path: Path) -> Dict[str, Any]:
-    ensure_pip_package("pyyaml", "yaml")
     import yaml  # type: ignore
     with path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
@@ -1256,17 +1260,22 @@ def run_proxy_setup_assistant() -> None:
         print("[오류] 올바른 포트를 입력하세요.")
         return
 
-    # 연결 테스트
+    # (중요) compose 수정에 필요한 pyyaml을 프록시/CA 적용 전에 선제 설치
+    compose_path = _compose_find_path()
+    if compose_path:
+        ensure_pip_package("pyyaml", "yaml")
+
+    # 연결 테스트 (프록시 자체 도달성 확인)
     if _tcp_test(proxy_host, proxy_port):
         print(f"[연결 확인] {proxy_host}:{proxy_port} TCP 연결 성공.")
     else:
         print(f"[경고] {proxy_host}:{proxy_port} 에 연결할 수 없습니다. 방화벽/네트워크를 확인하세요.")
 
-    # 시스템 프록시 설정 (비대화형 적용)
+    # 시스템 프록시 설정
     spm = SystemProxyManager(proxy_host, proxy_port)
     spm.enable()
 
-    # mitm CA 다운로드 & 신뢰
+    # mitm CA 다운로드 & 신뢰 (이 시점 이후 pip 설치는 피하는 구성)
     ca_downloaded = fetch_mitm_ca_via_proxy(proxy_host, proxy_port)
     if ca_downloaded:
         trust_mitm_ca()
@@ -1274,7 +1283,6 @@ def run_proxy_setup_assistant() -> None:
         print("[경고] 프록시 경유 mitm CA 다운로드 실패. system 신뢰 추가를 생략했습니다.")
 
     # ===== docker-compose.* 자동 수정 + .bak =====
-    compose_path = _compose_find_path()
     modified_services: List[str] = []
     if compose_path:
         print(f"[compose] 감지: {compose_path.name}")
