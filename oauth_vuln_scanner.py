@@ -10,9 +10,15 @@ OAuth Vuln Scanner (CLI)
 
 - 모드:
     1) Proxy Capture
+       - (개편) 같은 PC에서 서비스 클라이언트를 돌리는지 먼저 확인
+         · 같은 PC라면 호스트=127.0.0.1로 자동 고정, 포트만 질문 → 캡처 종료 후 3번을 자동 수행
+         · 다른 PC에서 모을 땐 기본 호스트=0.0.0.0
     2) Browser Session Capture
     3) Proxy Setup Assistant        ← OS별 시스템 프록시/mitm CA + docker-compose 자동 수정 + 컨테이너 주입 + (수정 시) up -d 자동 + mitm 기본 로깅 주입
+                                     (개편) 프록시 호스트/포트가 preset으로 들어오면 해당 값으로 자동 진행
+                                     (개편) 127.0.0.1/localhost로 받은 경우 컨테이너/compose에 host.docker.internal 자동 보정
     4) Proxy Setup Revert           ← 시스템 프록시/mitm CA/컨테이너 주입/compose 수정 원복 + mitm 기본 로깅 원복
+                                     (개편) 컨테이너의 /etc/hosts에 추가되었을 수 있는 host.docker.internal 매핑 제거
 
 주의:
 - 3번은 “설정만” 수행합니다(원복 묻지 않음). 원복은 4번에서 따로 실행하세요.
@@ -314,7 +320,7 @@ class ArtifactWriter:
         return out
 
     @staticmethod
-    def _merge_oauth_tokens_by_key_value(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _merge_oauth_tokens_by_key_value(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]]:
         """
         key+value 기준 통합.
         - where는 콤마 병합
@@ -934,7 +940,7 @@ def _wait_proxy_ready(host: str, port: int, proc, log_path: Path, timeout: float
 
 
 # ====== 캡처 실행 (Proxy/Browser) ======
-def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, login_url: Optional[str]) -> None:
+def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, login_url: Optional[str], suppress_untrust_prompt: bool = False) -> None:
     """Proxy Capture"""
     # 1) 필요한 패키지 선제 설치 (프록시/CA 적용 이전)
     mitmdump = ensure_mitmdump_available()
@@ -1144,9 +1150,10 @@ def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, lo
             "login_url": login_url,
         })
         print(f"[완료] 산출물: {aw.outdir}")
-        if ask_yes_no("mitmproxy 루트 CA 신뢰를 원래대로 되돌릴까요?", default=False):
-            untrust_mitm_ca()
-            print("[안내] CA 신뢰를 원복했습니다.")
+        if not suppress_untrust_prompt:
+            if ask_yes_no("mitmproxy 루트 CA 신뢰를 원래대로 되돌릴까요?", default=False):
+                untrust_mitm_ca()
+                print("[안내] CA 신뢰를 원복했습니다.")
 
 
 def run_browser_session_capture(target: str) -> None:
@@ -1357,6 +1364,7 @@ def compose_modify_services(compose_path: Path, proxy_host: str, proxy_port: int
     """
     compose 파일을 수정하고, 수정된 서비스명 목록을 반환.
     - HTTP_PROXY/HTTPS_PROXY/NO_PROXY/JAVA_TOOL_OPTIONS/REQUESTS_CA_BUNDLE 주입
+    - (개편) 프록시 호스트가 루프백이면 컨테이너용으로 host.docker.internal 사용 + extra_hosts 주입
     """
     data = _compose_load(compose_path)
     services = (data.get("services") or {})
@@ -1375,7 +1383,10 @@ def compose_modify_services(compose_path: Path, proxy_host: str, proxy_port: int
             print("[compose] 유효한 서비스가 없어 전체 적용으로 진행합니다.")
             target_names = list(services.keys())
 
-    proxy_url = f"http://{proxy_host}:{proxy_port}"
+    # 루프백이면 컨테이너가 접근 가능한 이름으로 보정
+    is_loopback = proxy_host in ("127.0.0.1", "localhost", "::1")
+    container_proxy_host = "host.docker.internal" if is_loopback else proxy_host
+    proxy_url = f"http://{container_proxy_host}:{proxy_port}"
     default_no_proxy = "localhost,127.0.0.1,::1,nginx,django,spring"
 
     print("설명: 프록시를 타지 않을 내부 호스트 목록입니다(콤마로 구분).")
@@ -1401,12 +1412,20 @@ def compose_modify_services(compose_path: Path, proxy_host: str, proxy_port: int
         if name in java_targets or ("spring" in c_name.lower()):
             nph = _no_proxy_to_java_hosts(env["NO_PROXY"])
             jtool = env.get("JAVA_TOOL_OPTIONS", "")
-            inject = f"-Dhttp.proxyHost={proxy_host} -Dhttp.proxyPort={proxy_port} -Dhttps.proxyHost={proxy_host} -Dhttps.proxyPort={proxy_port} -Dhttp.nonProxyHosts={nph}"
+            inject = f"-Dhttp.proxyHost={container_proxy_host} -Dhttp.proxyPort={proxy_port} -Dhttps.proxyHost={container_proxy_host} -Dhttps.proxyPort={proxy_port} -Dhttp.nonProxyHosts={nph}"
             if inject not in jtool:
                 env["JAVA_TOOL_OPTIONS"] = (jtool + " " + inject).strip()
 
         # 재할당
         svc["environment"] = env
+
+        # 루프백이면 extra_hosts로 host-gateway 매핑 추가
+        if is_loopback:
+            hosts = list(svc.get("extra_hosts", []) or [])
+            if "host.docker.internal:host-gateway" not in hosts:
+                hosts.append("host.docker.internal:host-gateway")
+            svc["extra_hosts"] = hosts
+
         services[name] = svc
         modified.append(name)
 
@@ -1417,6 +1436,8 @@ def compose_modify_services(compose_path: Path, proxy_host: str, proxy_port: int
     print("[원복 가이드(수동)]")
     print("  Linux/macOS: rm -f docker-compose.yml && mv docker-compose.yml.bak docker-compose.yml")
     print("  Windows PowerShell: Remove-Item docker-compose.yml; Rename-Item docker-compose.yml.bak docker-compose.yml")
+    if is_loopback:
+        print("[안내] 로컬 프록시를 감지하여 컨테이너에는 host.docker.internal로 연결되도록 설정했습니다.")
     print("")
     return modified
 
@@ -1477,11 +1498,27 @@ def _docker_ps_service_map() -> Dict[str, List[str]]:
 
 
 def docker_configure_container(container: str, proxy_host: str, proxy_port: int, no_proxy: str) -> None:
-    proxy_url = f"http://{proxy_host}:{proxy_port}"
+    """
+    (개편) 루프백이면 컨테이너 내부에서 host.docker.internal을 게이트웨이로 보정 후 그 이름으로 프록시 설정.
+    """
+    is_loopback = proxy_host in ("127.0.0.1", "localhost", "::1")
+
+    if is_loopback:
+        pre = (
+            "GW=$(ip route | awk '/default/ {print $3}' || true); "
+            "if [ -n \"$GW\" ] && ! grep -q 'host.docker.internal' /etc/hosts 2>/dev/null; then "
+            "  echo \"$GW host.docker.internal\" >> /etc/hosts; "
+            "fi; "
+            "PH=host.docker.internal; "
+        )
+    else:
+        pre = f"PH='{proxy_host}'; "
+
     cmd1 = [
         "docker", "exec", container, "/bin/sh", "-lc",
-        f'echo "export HTTP_PROXY={proxy_url}" > /etc/profile.d/proxy.sh && '
-        f'echo "export HTTPS_PROXY={proxy_url}" >> /etc/profile.d/proxy.sh && '
+        pre +
+        f'echo "export HTTP_PROXY=http://$PH:{proxy_port}"  > /etc/profile.d/proxy.sh && '
+        f'echo "export HTTPS_PROXY=http://$PH:{proxy_port}" >> /etc/profile.d/proxy.sh && '
         f'echo "export NO_PROXY={no_proxy}" >> /etc/profile.d/proxy.sh && '
         'chmod 644 /etc/profile.d/proxy.sh'
     ]
@@ -1489,10 +1526,11 @@ def docker_configure_container(container: str, proxy_host: str, proxy_port: int,
 
     cmd_fetch = [
         "docker", "exec", container, "/bin/sh", "-lc",
+        pre +
         'apk --version >/dev/null 2>&1 && PKG="apk add --no-cache ca-certificates curl" || '
         'PKG="apt-get update && apt-get install -y ca-certificates curl"; '
         '$PKG >/dev/null 2>&1 || true; '
-        f'export http_proxy={proxy_url}; export https_proxy={proxy_url}; '
+        f'export http_proxy=http://$PH:{proxy_port}; export https_proxy=http://$PH:{proxy_port}; '
         'mkdir -p /usr/local/share/ca-certificates && '
         'curl -fsSL http://mitm.it/cert/pem -o /usr/local/share/ca-certificates/mitmproxy-ca.crt || true; '
         '(command -v update-ca-certificates >/dev/null && update-ca-certificates) || '
@@ -1503,13 +1541,14 @@ def docker_configure_container(container: str, proxy_host: str, proxy_port: int,
 
 
 def docker_revert_container(container: str) -> None:
-    """컨테이너 내부 프록시 주입/mitm CA 제거."""
+    """컨테이너 내부 프록시 주입/mitm CA 제거 + (개편) hosts 보정 제거."""
     cmd = [
         "docker", "exec", container, "/bin/sh", "-lc",
         'rm -f /etc/profile.d/proxy.sh || true; '
         'rm -f /usr/local/share/ca-certificates/mitmproxy-ca.crt || true; '
         '(command -v update-ca-certificates >/dev/null && update-ca-certificates --fresh) || '
-        '(command -v update-ca-trust >/dev/null && update-ca-trust) || true'
+        '(command -v update-ca-trust >/dev/null && update-ca-trust) || true; '
+        "sed -i '/host.docker.internal/d' /etc/hosts 2>/dev/null || true"
     ]
     _run(cmd)
     print(f"[docker] 컨테이너 '{container}'의 프록시/CA 주입을 제거했습니다.")
@@ -1524,24 +1563,32 @@ def _tcp_test(host: str, port: int, timeout: float = 2.0) -> bool:
         return False
 
 
-def run_proxy_setup_assistant() -> None:
+def run_proxy_setup_assistant(preset_host: Optional[str] = None, preset_port: Optional[int] = None) -> None:
     """
     서비스 클라이언트(서버)에서 실행해, 지정한 Proxy Capture(진단 PC)의 IP:PORT로
     시스템 프록시/CA 신뢰를 자동 적용하고 docker-compose를 감지하면 .bak 백업 후 자동 수정.
     실행 중 컨테이너에도 자동 주입. compose 수정 시에는 up -d 자동 실행.
     또한 mitm 기본 로깅 옵션(stream_large_bodies, anticomp)을 설정합니다.
+
+    (개편) preset_host/preset_port가 주어지면 그 값으로 질문 없이 진행.
     """
     print("\n[Proxy Setup Assistant]")
     print("설명: 진단 PC의 Proxy Capture(IP:PORT)로 이 시스템/도커 서비스를 연결시키는 모드입니다.")
-    proxy_host = input("진단 PC의 프록시 호스트/IP (예: 10.0.0.5): ").strip()
-    if not proxy_host:
-        print("[오류] 호스트가 필요합니다.")
-        return
-    try:
-        proxy_port = int(input("프록시 포트 (예: 8080): ").strip())
-    except ValueError:
-        print("[오류] 올바른 포트를 입력하세요.")
-        return
+
+    if preset_host is not None and preset_port is not None:
+        proxy_host = preset_host
+        proxy_port = int(preset_port)
+        print(f"[자동] 프록시 호스트/포트: {proxy_host}:{proxy_port}")
+    else:
+        proxy_host = input("진단 PC의 프록시 호스트/IP (예: 10.0.0.5): ").strip()
+        if not proxy_host:
+            print("[오류] 호스트가 필요합니다.")
+            return
+        try:
+            proxy_port = int(input("프록시 포트 (예: 8080): ").strip())
+        except ValueError:
+            print("[오류] 올바른 포트를 입력하세요.")
+            return
 
     # (중요) compose 수정에 필요한 pyyaml을 프록시/CA 적용 전에 선제 설치
     compose_path = _compose_find_path()
@@ -1702,12 +1749,25 @@ def main() -> None:
 
     if choice == "1":
         print("\n[Proxy Capture] 이 PC에서 mitmproxy를 실행해, 이 프록시를 경유하는 요청/응답 트래픽을 캡처합니다.")
-        listen_host = input("프록시 호스트 [기본 127.0.0.1]: ").strip() or "127.0.0.1"
-        try:
-            listen_port = int(input("프록시 포트 [기본 8080]: ").strip() or "8080")
-        except ValueError:
-            print("잘못된 포트 값입니다. 8080으로 진행합니다.")
-            listen_port = 8080
+
+        same_pc = ask_yes_no("이 PC에서 서비스 클라이언트(컨테이너/앱)가 구동 중입니까? (같은 PC)", default=True)
+
+        if same_pc:
+            listen_host = "127.0.0.1"  # 자동 고정
+            try:
+                listen_port = int(input("프록시 포트 [기본 8080]: ").strip() or "8080")
+            except ValueError:
+                print("잘못된 포트 값입니다. 8080으로 진행합니다.")
+                listen_port = 8080
+        else:
+            # 다른 PC에서 트래픽을 모을 땐 기본 호스트를 0.0.0.0으로
+            listen_host = input("프록시 호스트 [기본 0.0.0.0]: ").strip() or "0.0.0.0"
+            try:
+                listen_port = int(input("프록시 포트 [기본 8080]: ").strip() or "8080")
+            except ValueError:
+                print("잘못된 포트 값입니다. 8080으로 진행합니다.")
+                listen_port = 8080
+
         ssl_insecure = ask_yes_no("서버 인증서 검증을 생략하시겠습니까?", default=False)
 
         print("설명: 로그인 플로우를 캡처하려면 브라우저로 로그인 페이지를 띄울 수 있습니다.")
@@ -1716,7 +1776,11 @@ def main() -> None:
         if open_login:
             login_url = input("로그인 페이지 URL을 입력하세요 (예: example.com/login): ").strip() or None
 
-        run_proxy_capture(listen_host, listen_port, ssl_insecure, login_url)
+        # 같은 PC일 땐 1번 종료 후 3번을 자동으로 이어서 수행
+        run_proxy_capture(listen_host, listen_port, ssl_insecure, login_url, suppress_untrust_prompt=same_pc)
+        if same_pc:
+            print("\n[자동] Proxy Setup Assistant(3번)을 이어서 실행합니다.")
+            run_proxy_setup_assistant(preset_host=listen_host, preset_port=listen_port)
         return
 
     if choice == "2":
