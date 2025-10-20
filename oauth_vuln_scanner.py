@@ -11,8 +11,8 @@ OAuth Vuln Scanner (CLI)
 - 모드:
     1) Proxy Capture
     2) Browser Session Capture
-    3) Proxy Setup Assistant        ← OS별 시스템 프록시/mitm CA + docker-compose 자동 수정 + 컨테이너 주입 + (수정 시) up -d 자동
-    4) Proxy Setup Revert           ← 시스템 프록시/mitm CA/컨테이너 주입/compose 수정 원복
+    3) Proxy Setup Assistant        ← OS별 시스템 프록시/mitm CA + docker-compose 자동 수정 + 컨테이너 주입 + (수정 시) up -d 자동 + mitm 기본 로깅 주입
+    4) Proxy Setup Revert           ← 시스템 프록시/mitm CA/컨테이너 주입/compose 수정 원복 + mitm 기본 로깅 원복
 
 주의:
 - 3번은 “설정만” 수행합니다(원복 묻지 않음). 원복은 4번에서 따로 실행하세요.
@@ -45,6 +45,7 @@ OAUTH_KEYS = {
     "id_token",
     "refresh_token",
     "token",
+    "oauth_token",
     "token_type",
     "scope",
     "state",
@@ -137,6 +138,107 @@ def _run(cmd: List[str], check: bool = False) -> int:
         print(f"[실행 오류] {' '.join(cmd)} -> {e}")
         return 1
 
+# === 추가: 토큰 분류/디코딩 유틸 ===
+def _looks_like_jwt(v: str) -> bool:
+    if not isinstance(v, str):
+        return False
+    return bool(JWT_REGEX.search(v))
+
+def _classify_oauth_pair(key_lc: str, value: Any, where: str) -> str:
+    if key_lc == "access_token":
+        return "access_token"
+    if key_lc == "id_token":
+        return "id_token"
+    if key_lc == "refresh_token":
+        return "refresh_token"
+    if key_lc == "code":
+        return "auth_code"
+    if key_lc in ("token", "oauth_token"):
+        if isinstance(value, str) and _looks_like_jwt(value):
+            return "unknown_jwt"
+        return "unknown_token"
+    if key_lc == "authorization":
+        return "authorization_bearer"
+    return "other"
+
+def _maybe_decode_body(headers: Dict[str, Any], body: bytes) -> str:
+    """content-encoding을 고려해 body를 가급적 텍스트로 디코딩"""
+    if not body:
+        return ""
+    h = {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+    enc = h.get("content-encoding", "")
+    try:
+        raw = body
+        if "br" in enc:
+            try:
+                import brotli  # type: ignore
+                raw = brotli.decompress(raw)
+            except Exception:
+                pass
+        if "gzip" in enc:
+            import gzip, io
+            raw = gzip.GzipFile(fileobj=io.BytesIO(raw)).read()
+        elif "deflate" in enc:
+            import zlib
+            try:
+                raw = zlib.decompress(raw, -zlib.MAX_WBITS)
+            except Exception:
+                raw = zlib.decompress(raw)
+        ctype = h.get("content-type", "")
+        charset = None
+        m = re.search(r"charset=([\w\-\d]+)", ctype, re.I)
+        if m:
+            charset = m.group(1).strip()
+        for cs in (charset, "utf-8", "latin-1"):
+            if not cs:
+                continue
+            try:
+                return raw.decode(cs, "ignore")
+            except Exception:
+                continue
+    except Exception:
+        pass
+    try:
+        return body.decode("utf-8", "ignore")
+    except Exception:
+        return body.decode("latin-1", "ignore")
+
+def _collect_from_authz_header(headers: Dict[str, Any], url: Optional[str]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    if not headers:
+        return out
+    vals: List[str] = []
+    try:
+        vals = [v for k, v in headers.items(multi=True) if str(k).lower() == "authorization"]  # mitmproxy MultiDict
+    except Exception:
+        vals = [v for k, v in dict(headers).items() if str(k).lower() == "authorization"]
+    for v in vals:
+        if not isinstance(v, str):
+            continue
+        m = re.match(r"\s*Bearer\s+(.+)\s*$", v, re.I)
+        if m:
+            tok = m.group(1)
+            out.append({
+                "key": "authorization",
+                "value": tok,
+                "where": "request.headers.authorization",
+                "url": url,
+                "kind": "authorization_bearer",
+            })
+    return out
+
+def _collect_from_cookies_for_oauth(name: str, value: str, where: str, url: Optional[str]) -> Optional[Dict[str, Any]]:
+    key_lc = name.lower()
+    if key_lc in ("access_token", "id_token", "refresh_token", "token", "oauth_token"):
+        return {
+            "key": name,
+            "value": value,
+            "where": where,
+            "url": url,
+            "kind": _classify_oauth_pair(key_lc, value, where),
+        }
+    return None
+
 
 # ====== 산출물 작성기 ======
 class ArtifactWriter:
@@ -154,7 +256,8 @@ class ArtifactWriter:
             "session_storage": {},
             "auth_headers": [],
             "found_jwts": [],
-            "oauth_tokens": [],
+            "oauth_tokens": [],     # 개별 레코드: {key, value, where, url, kind}
+            "oauth_by_type": {},    # 집계: kind -> [ {value, where, url, key}... ]
             "jwt_claims": [],
         }
         self._started = now_iso()
@@ -171,7 +274,7 @@ class ArtifactWriter:
             self._stats["errors"] += 1
 
     def add_tokens(self, **kw) -> None:
-        for k in ("cookies", "auth_headers", "found_jwts", "oauth_tokens", "jwt_claims"):
+        for k in ("cookies", "auth_headers", "found_jwts", "jwt_claims"):
             if kw.get(k):
                 if isinstance(self._token_store.get(k), list):
                     self._token_store[k].extend(kw[k])
@@ -179,6 +282,22 @@ class ArtifactWriter:
             self._token_store["local_storage"].update(kw["local_storage"])
         if kw.get("session_storage"):
             self._token_store["session_storage"].update(kw["session_storage"])
+
+        # oauth_tokens: kind 분류 및 by_type 집계
+        if kw.get("oauth_tokens"):
+            items = kw["oauth_tokens"]
+            for it in items:
+                key_lc = str(it.get("key", "")).lower()
+                if "kind" not in it or not it["kind"]:
+                    it["kind"] = _classify_oauth_pair(key_lc, it.get("value"), it.get("where", ""))
+                self._token_store["oauth_tokens"].append(it)
+                kd = it.get("kind") or "unknown_token"
+                self._token_store["oauth_by_type"].setdefault(kd, []).append({
+                    "key": it.get("key"),
+                    "value": it.get("value"),
+                    "where": it.get("where"),
+                    "url": it.get("url"),
+                })
 
     @staticmethod
     def _dedupe_list(lst: List[Any]) -> List[Any]:
@@ -196,20 +315,28 @@ class ArtifactWriter:
 
     @staticmethod
     def _merge_oauth_tokens_by_key_value(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """key+value가 동일하면 하나로 통합하고, where는 콤마+공백(“, ”)으로 합친다."""
+        """
+        key+value 기준 통합.
+        - where는 콤마 병합
+        - url은 최초 비어있지 않은 값 유지
+        - kind는 다르면 리스트로 유지
+        """
         grouped: Dict[Tuple[str, str], Dict[str, Any]] = {}
         for it in items:
             k = str(it.get("key"))
             v = str(it.get("value"))
             w = str(it.get("where", "") or "")
             u = it.get("url")
+            kind = it.get("kind") or "unknown_token"
             gv = grouped.get((k, v))
             if not gv:
-                grouped[(k, v)] = {"key": k, "value": v, "where_list": [], "url": u}
+                grouped[(k, v)] = {"key": k, "value": v, "where_list": [], "url": u, "kinds": []}
             if w and w not in grouped[(k, v)]["where_list"]:
                 grouped[(k, v)]["where_list"].append(w)
             if not grouped[(k, v)]["url"] and u:
                 grouped[(k, v)]["url"] = u
+            if kind and kind not in grouped[(k, v)]["kinds"]:
+                grouped[(k, v)]["kinds"].append(kind)
         out: List[Dict[str, Any]] = []
         for (_k, _v), rec in grouped.items():
             out.append({
@@ -217,30 +344,21 @@ class ArtifactWriter:
                 "value": _v,
                 "where": ", ".join(rec["where_list"]),
                 "url": rec.get("url"),
+                "kind": rec["kinds"][0] if len(rec["kinds"]) == 1 else rec["kinds"],
             })
         return out
 
     def _readme_text(self) -> str:
-        if self.mode_label == "Proxy Capture":
-            header = [
-                "이 폴더는 'Proxy Capture' 모드의 산출물입니다.",
-                "이 모드는 이 PC를 프록시로 실행하고, 해당 프록시를 경유하는 요청/응답 트래픽을 캡처하여 OAuth 관련 이슈를 점검합니다.",
-                "",
-                "[파일 설명]",
-                "- packets.jsonl: 캡처된 요청/응답을 한 줄당 한 건씩 순서대로 기록(type=request/response).",
-                "- session_token.json: 쿠키/스토리지/Authorization/JWT 및 OAuth 파라미터(code/access_token/id_token 등) 요약.",
-                "- run_meta.json: 실행 시간/모드/카운트/대상 정보 등의 메타데이터.",
-            ]
-        else:
-            header = [
-                "이 폴더는 'Browser Session Capture' 모드의 산출물입니다.",
-                "이 모드는 도구가 띄운 브라우저의 한 세션 동안 발생한 요청/응답 트래픽을 캡처하여 OAuth 관련 이슈를 점검합니다.",
-                "",
-                "[파일 설명]",
-                "- packets.jsonl: 캡처된 요청/응답을 한 줄당 한 건씩 순서대로 기록(type=request/response).",
-                "- session_token.json: 쿠키/스토리지/Authorization/JWT 및 OAuth 파라미터(code/access_token/id_token 등) 요약.",
-                "- run_meta.json: 실행 시간/모드/카운트/대상 정보 등의 메타데이터.",
-            ]
+        header = [
+            f"이 폴더는 '{self.mode_label}' 모드의 산출물입니다.",
+            "",
+            "[파일 설명]",
+            "- packets.jsonl: 캡처된 요청/응답을 한 줄당 한 건씩 순서대로 기록(type=request/response).",
+            "- session_token.json: 쿠키/스토리지/Authorization/JWT 및 OAuth 파라미터(code/access_token/id_token/refresh_token 등) 요약.",
+            "    • oauth_tokens: 개별 토큰 레코드(종류는 kind 필드로 표시).",
+            "    • oauth_by_type: 종류별 묶음(access_token, id_token, refresh_token, auth_code, authorization_bearer 등).",
+            "- run_meta.json: 실행 시간/모드/카운트/대상 정보 등의 메타데이터.",
+        ]
         return os.linesep.join(header)
 
     def finalize(self, wired: bool, mode: str, extra: Optional[Dict[str, Any]] = None) -> None:
@@ -249,10 +367,25 @@ class ArtifactWriter:
         self._token_store["auth_headers"] = self._dedupe_list(self._token_store.get("auth_headers", []))
         self._token_store["found_jwts"] = self._dedupe_list(self._token_store.get("found_jwts", []))
         self._token_store["jwt_claims"] = self._dedupe_list(self._token_store.get("jwt_claims", []))
-        # oauth_tokens는 'key+value' 기준으로 통합(중복 완전 제거 + where 병합: 콤마)
-        self._token_store["oauth_tokens"] = self._merge_oauth_tokens_by_key_value(
-            self._token_store.get("oauth_tokens", [])
-        )
+
+        merged = self._merge_oauth_tokens_by_key_value(self._token_store.get("oauth_tokens", []))
+        self._token_store["oauth_tokens"] = merged
+
+        # 집계 재구성(oauth_by_type)
+        by_type: Dict[str, List[Dict[str, Any]]] = {}
+        for it in merged:
+            kinds = it.get("kind")
+            kinds_list = kinds if isinstance(kinds, list) else [kinds]
+            for kd in kinds_list:
+                kd = kd or "unknown_token"
+                by_type.setdefault(kd, []).append({
+                    "key": it.get("key"),
+                    "value": it.get("value"),
+                    "where": it.get("where"),
+                    "url": it.get("url"),
+                })
+        self._token_store["oauth_by_type"] = by_type
+
         meta = {
             "started_at": self._started,
             "finished_at": now_iso(),
@@ -273,10 +406,16 @@ class ArtifactWriter:
 # ====== 토큰 수집 유틸 ======
 def _collect_from_kv(kv: Dict[str, Any], where: str, url: Optional[str] = None) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
-    for k, v in kv.items():
+    for k, v in (kv or {}).items():
         lk = str(k).lower()
         if lk in OAUTH_KEYS:
-            out.append({"key": k, "value": v, "where": where, "url": url})
+            out.append({
+                "key": k,
+                "value": v,
+                "where": where,
+                "url": url,
+                "kind": _classify_oauth_pair(lk, v, where),
+            })
     return out
 
 
@@ -300,22 +439,31 @@ def _decode_jwt_claims(token: str) -> Optional[Dict[str, Any]]:
 
 def _extract_and_store_oauth_from_req_resp(aw: ArtifactWriter, req_obj, resp_obj, req_body: bytes, resp_body: bytes) -> None:
     try:
+        # URL 파라미터
         up = parse_url_params(getattr(req_obj, 'url', '') or '')
         aw.add_tokens(oauth_tokens=_collect_from_kv(up.get('query', {}), 'request.query', up.get('url')))
         aw.add_tokens(oauth_tokens=_collect_from_kv(up.get('fragment', {}), 'request.fragment', up.get('url')))
-        ct = ''
+
+        # Authorization: Bearer 스캔
         try:
-            ct = (getattr(req_obj, 'headers', {}) or {}).get('content-type') or ''
+            aw.add_tokens(oauth_tokens=_collect_from_authz_header(getattr(req_obj, 'headers', {}) or {}, up.get('url')))
+        except Exception:
+            pass
+
+        # 요청 바디 파싱
+        ct_req = ''
+        try:
+            ct_req = (getattr(req_obj, 'headers', {}) or {}).get('content-type') or ''
         except Exception:
             try:
-                ct = req_obj.headers.get('Content-Type') or ''
+                ct_req = req_obj.headers.get('Content-Type') or ''
             except Exception:
-                ct = ''
+                ct_req = ''
         body_text = (req_body or b'').decode('latin-1', 'ignore')
         kv: Dict[str, Any] = {}
-        if 'application/x-www-form-urlencoded' in ct or ('=' in body_text and '&' in body_text):
+        if 'application/x-www-form-urlencoded' in ct_req or ('=' in body_text and '&' in body_text):
             kv = dict(parse_qsl(body_text, keep_blank_values=True))
-        elif 'application/json' in ct:
+        elif 'application/json' in ct_req:
             try:
                 data = json.loads(body_text)
                 if isinstance(data, dict):
@@ -324,6 +472,8 @@ def _extract_and_store_oauth_from_req_resp(aw: ArtifactWriter, req_obj, resp_obj
                 pass
         if kv:
             aw.add_tokens(oauth_tokens=_collect_from_kv(kv, 'request.body', up.get('url')))
+
+        # 응답 Location 파라미터
         if resp_obj is not None:
             try:
                 loc = None
@@ -338,8 +488,35 @@ def _extract_and_store_oauth_from_req_resp(aw: ArtifactWriter, req_obj, resp_obj
                     aw.add_tokens(oauth_tokens=_collect_from_kv(locp.get('fragment', {}), 'response.location.fragment', loc))
             except Exception:
                 pass
-        rtext = (resp_body or b'').decode('latin-1', 'ignore')
-        tokens = scan_jwts(' '.join([body_text, rtext]))
+
+        # 응답 바디(중요: JSON/폼 + JWT 스캔)
+        resp_headers = {}
+        try:
+            resp_headers = dict(getattr(resp_obj, 'headers', {}) or {})
+        except Exception:
+            resp_headers = {}
+        rtext = _maybe_decode_body(resp_headers, resp_body)
+
+        added = False
+        try:
+            if rtext.strip().startswith("{"):
+                data = json.loads(rtext)
+                if isinstance(data, dict):
+                    aw.add_tokens(oauth_tokens=_collect_from_kv(data, 'response.body.json', up.get('url')))
+                    added = True
+        except Exception:
+            pass
+        if not added and ('=' in rtext and '&' in rtext):
+            try:
+                kv2 = dict(parse_qsl(rtext, keep_blank_values=True))
+                if kv2:
+                    aw.add_tokens(oauth_tokens=_collect_from_kv(kv2, 'response.body.form', up.get('url')))
+            except Exception:
+                pass
+
+        # JWT 스캔 (요청+응답 텍스트)
+        joined = ' '.join([body_text or '', rtext or ''])
+        tokens = scan_jwts(joined)
         if tokens:
             claims = []
             for t in tokens:
@@ -481,6 +658,106 @@ def fetch_mitm_ca_via_proxy(proxy_host: str, proxy_port: int) -> bool:
     except Exception as e:
         print(f"[경고] mitm CA 다운로드 실패: {e}")
         return False
+
+# === 추가: mitm 기본 설정 파일 주입/원복 ===
+def ensure_mitm_config_defaults() -> None:
+    """
+    ~/.mitmproxy/config.yaml에 기본값을 주입:
+      - stream_large_bodies: 5m
+      - anticomp: true
+    기존 파일이 있으면 백업 후 누락 항목만 추가.
+    """
+    try:
+        MITM_DIR.mkdir(parents=True, exist_ok=True)
+        cfg = MITM_DIR / "config.yaml"
+        want = {
+            "stream_large_bodies": "5m",
+            "anticomp": True,
+        }
+        current: Dict[str, Any] = {}
+        changed = False
+        if cfg.exists():
+            # 백업
+            bak = cfg.with_suffix(".yaml.bak")
+            try:
+                shutil.copy2(cfg, bak)
+                print(f"[mitmproxy] config.yaml 백업 생성: {bak}")
+            except Exception:
+                pass
+            try:
+                import yaml  # type: ignore
+                current = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+            except Exception:
+                txt = cfg.read_text(encoding="utf-8", errors="ignore")
+                if "stream_large_bodies" not in txt:
+                    txt += "\nstream_large_bodies: 5m\n"
+                    changed = True
+                if re.search(r"(?m)^\s*anticomp\s*:", txt) is None:
+                    txt += "anticomp: true\n"
+                    changed = True
+                if changed:
+                    cfg.write_text(txt, encoding="utf-8")
+                    print("[mitmproxy] 기본 캡처 옵션 추가(stream_large_bodies, anticomp).")
+                return
+        # yaml 사용 가능하면 병합 저장
+        try:
+            import yaml  # type: ignore
+            for k, v in want.items():
+                if current.get(k) in (None, "", 0, False):
+                    current[k] = v
+                    changed = True
+            if changed or not cfg.exists():
+                cfg.write_text(yaml.safe_dump(current or want, sort_keys=False), encoding="utf-8")
+                print("[mitmproxy] 기본 캡처 옵션 적용(stream_large_bodies=5m, anticomp=true).")
+        except Exception:
+            # YAML 미설치 시 append
+            with cfg.open("a", encoding="utf-8") as f:
+                for k, v in want.items():
+                    f.write(f"{k}: {str(v).lower() if isinstance(v,bool) else v}\n")
+            print("[mitmproxy] 기본 캡처 옵션 적용(append).")
+    except Exception:
+        pass
+
+def revert_mitm_config_defaults() -> None:
+    """
+    3번에서 주입한 ~/.mitmproxy/config.yaml 변경 원복:
+    - .bak가 있으면 복원
+    - 없으면 stream_large_bodies/anticomp 키 제거 시도
+    """
+    try:
+        cfg = MITM_DIR / "config.yaml"
+        bak = cfg.with_suffix(".yaml.bak")
+        if bak.exists():
+            try:
+                if cfg.exists():
+                    cfg.unlink()
+                shutil.move(str(bak), str(cfg))
+                print("[mitmproxy] config.yaml을 백업본으로 복원했습니다.")
+                return
+            except Exception as e:
+                print(f"[mitmproxy] 백업 복원 실패: {e}")
+        if cfg.exists():
+            try:
+                import yaml  # type: ignore
+                data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+                if isinstance(data, dict):
+                    changed = False
+                    for k in ("stream_large_bodies", "anticomp"):
+                        if k in data:
+                            data.pop(k, None); changed = True
+                    if changed:
+                        cfg.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+                        print("[mitmproxy] config.yaml에서 기본 캡처 옵션을 제거했습니다.")
+            except Exception:
+                # 라인 기반 제거
+                txt = cfg.read_text(encoding="utf-8", errors="ignore")
+                new = re.sub(r"(?m)^\s*stream_large_bodies\s*:\s*.*\n?", "", txt)
+                new = re.sub(r"(?m)^\s*anticomp\s*:\s*.*\n?", "", new)
+                if new != txt:
+                    cfg.write_text(new, encoding="utf-8")
+                    print("[mitmproxy] config.yaml 텍스트 기반으로 옵션을 제거했습니다.")
+    except Exception:
+        pass
 
 
 # ====== 시스템 프록시 관리 ======
@@ -684,6 +961,7 @@ def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, lo
         "--listen-port", str(listen_port),
         "-w", str(tmp_flows),
         "--set", "stream_large_bodies=5m",
+        "--set", "anticomp=true",   # 압축 해제(본문 파싱 용이)
     ]
     if ssl_insecure:
         cmd.append("--ssl-insecure")
@@ -777,14 +1055,14 @@ def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, lo
                             "response": None,
                             "error": None,
                         }
-                        # Authorization 헤더(요청에서 추출)
+                        # Authorization 헤더 → oauth_tokens
                         try:
-                            auth = [v for k, v in req.headers.items(multi=True) if k.lower() == "authorization"]
-                        except TypeError:
-                            auth = [v for k, v in dict(req.headers).items() if k.lower() == "authorization"]
-                        if auth:
-                            aw.add_tokens(auth_headers=auth)
-                        # 요청 쿠키 추출
+                            auth_tokens = _collect_from_authz_header(req.headers, req.url)
+                            if auth_tokens:
+                                aw.add_tokens(oauth_tokens=auth_tokens)
+                        except Exception:
+                            pass
+                        # 요청 쿠키 → cookies + oauth_tokens
                         try:
                             cookies_hdrs = (
                                 req.headers.get_all("cookie") if hasattr(req.headers, "get_all")
@@ -795,6 +1073,9 @@ def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, lo
                                 c = _SC(); c.load(raw)
                                 for morsel in c.values():
                                     aw.add_tokens(cookies=[{"name": morsel.key, "value": morsel.value, "source": "request"}])
+                                    ot = _collect_from_cookies_for_oauth(morsel.key, morsel.value, "cookie.request", req.url)
+                                    if ot:
+                                        aw.add_tokens(oauth_tokens=[ot])
                         except Exception:
                             pass
                         aw.add_packet(req_entry)
@@ -802,7 +1083,7 @@ def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, lo
                         # ---- 응답 레코드(있다면) ----
                         resp_body = b""
                         if resp is not None:
-                            resp_body = getattr(resp, "raw_content", None) or getattr(resp, "content", b"") or b""
+                            resp_body = getattr(resp, "content", None) or getattr(resp, "raw_content", b"") or b""
                             resp_entry = {
                                 "ts": now_iso(),
                                 "via": "mitmdump",
@@ -817,7 +1098,7 @@ def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, lo
                                 },
                                 "error": None,
                             }
-                            # 응답 set-cookie 추출
+                            # 응답 set-cookie → cookies + oauth_tokens
                             try:
                                 set_cookie_hdrs = (
                                     resp.headers.get_all("set-cookie") if hasattr(resp.headers, "get_all")
@@ -827,6 +1108,9 @@ def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, lo
                                     c = SimpleCookie(); c.load(raw)
                                     for morsel in c.values():
                                         aw.add_tokens(cookies=[{"name": morsel.key, "value": morsel.value, "source": "response"}])
+                                        ot = _collect_from_cookies_for_oauth(morsel.key, morsel.value, "cookie.response", getattr(req, "url", None))
+                                        if ot:
+                                            aw.add_tokens(oauth_tokens=[ot])
                             except Exception:
                                 pass
                             aw.add_packet(resp_entry)
@@ -951,10 +1235,8 @@ def run_browser_session_capture(target: str) -> None:
                         "response": None,
                         "error": None,
                     }
-                    # Authorization 헤더
-                    auth = [v for k, v in dict(req.headers).items() if k.lower() == "authorization"]
-                    if auth:
-                        aw.add_tokens(auth_headers=auth)
+                    # Authorization 헤더 → oauth_tokens
+                    aw.add_tokens(oauth_tokens=_collect_from_authz_header(dict(req.headers), req.url))
                     aw.add_packet(req_entry)
 
                     # ---- 응답(있으면) ----
@@ -1247,6 +1529,7 @@ def run_proxy_setup_assistant() -> None:
     서비스 클라이언트(서버)에서 실행해, 지정한 Proxy Capture(진단 PC)의 IP:PORT로
     시스템 프록시/CA 신뢰를 자동 적용하고 docker-compose를 감지하면 .bak 백업 후 자동 수정.
     실행 중 컨테이너에도 자동 주입. compose 수정 시에는 up -d 자동 실행.
+    또한 mitm 기본 로깅 옵션(stream_large_bodies, anticomp)을 설정합니다.
     """
     print("\n[Proxy Setup Assistant]")
     print("설명: 진단 PC의 Proxy Capture(IP:PORT)로 이 시스템/도커 서비스를 연결시키는 모드입니다.")
@@ -1281,6 +1564,10 @@ def run_proxy_setup_assistant() -> None:
         trust_mitm_ca()
     else:
         print("[경고] 프록시 경유 mitm CA 다운로드 실패. system 신뢰 추가를 생략했습니다.")
+
+    # mitm 기본 로깅/본문 캡처 설정 주입
+    ensure_mitm_config_defaults()
+    print("[mitmproxy] 기본 캡처 설정(stream_large_bodies=5m, anticomp=true)을 적용했습니다.")
 
     # ===== docker-compose.* 자동 수정 + .bak =====
     modified_services: List[str] = []
@@ -1337,10 +1624,10 @@ def run_proxy_setup_assistant() -> None:
 def run_proxy_setup_revert() -> None:
     """
     시스템 프록시 비활성화, mitm CA 제거, docker-compose 원복(+ up -d),
-    실행 중 컨테이너의 프록시/CA 주입 제거를 자동 수행.
+    실행 중 컨테이너의 프록시/CA 주입 제거, mitm 기본 로깅 원복을 자동 수행.
     """
     print("\n[Proxy Setup Revert]")
-    print("설명: 3번에서 적용한 프록시/CA/compose/컨테이너 주입을 원래대로 되돌립니다.")
+    print("설명: 3번에서 적용한 프록시/CA/compose/컨테이너 주입/mitm 설정을 원래대로 되돌립니다.")
 
     # 1) 시스템 프록시 비활성화
     spm = SystemProxyManager("0.0.0.0", 0)
@@ -1349,7 +1636,10 @@ def run_proxy_setup_revert() -> None:
     # 2) mitm CA 제거
     untrust_mitm_ca()
 
-    # 3) compose 원복(+ up -d)
+    # 3) mitm 기본 로깅 설정 원복
+    revert_mitm_config_defaults()
+
+    # 4) compose 원복(+ up -d)
     compose_path = _compose_find_path()
     if compose_path:
         reverted = compose_revert_auto(compose_path)
@@ -1363,7 +1653,7 @@ def run_proxy_setup_revert() -> None:
     else:
         print("[compose] 현재 경로에서 docker-compose 파일을 찾지 못했습니다. (원복 생략)")
 
-    # 4) 실행 중 컨테이너의 주입 제거 (전체 대상)
+    # 5) 실행 중 컨테이너의 주입 제거 (전체 대상)
     if docker_available():
         svc_map = _docker_ps_service_map()
         all_containers = [cid for ids in svc_map.values() for cid in ids]
