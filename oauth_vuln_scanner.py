@@ -11,7 +11,8 @@ OAuth Vuln Scanner (CLI)
 - 모드:
     1) Proxy Capture
        - (개편) 같은 PC에서 서비스 클라이언트를 돌리는지 먼저 확인
-         · 같은 PC라면 호스트=127.0.0.1로 자동 고정, 포트만 질문 → 캡처 종료 후 3번을 자동 수행
+         · 같은 PC라면 호스트=127.0.0.1로 자동 고정, 포트만 질문 → **캡처 도중** 3번을 자동 수행
+           (프록시 자동 설정이 끝난 뒤 브라우저가 켜지도록 순서 조정)
          · 다른 PC에서 모을 땐 기본 호스트=0.0.0.0
     2) Browser Session Capture
     3) Proxy Setup Assistant        ← OS별 시스템 프록시/mitm CA + docker-compose 자동 수정 + 컨테이너 주입 + (수정 시) up -d 자동 + mitm 기본 로깅 주입
@@ -36,6 +37,7 @@ import tempfile
 import shutil
 import subprocess
 import os
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit, parse_qsl
@@ -68,6 +70,52 @@ OAUTH_KEYS = {
 # === 산출물 디렉토리(간결명) ===
 PROXY_ARTIFACT_DIR = Path("./proxy_artifacts").resolve()
 BROWSER_ARTIFACT_DIR = Path("./browser_artifacts").resolve()
+
+# ====== 진행률(스피너/바) 유틸 ======
+class _Spinner:
+    def __init__(self, text: str = "작업 진행 중"):
+        self.text = text
+        self._stop = False
+        self._t = threading.Thread(target=self._spin, daemon=True)
+
+    def _spin(self):
+        frames = "|/-\\"
+        i = 0
+        while not self._stop:
+            sys.stdout.write(f"\r{self.text} {frames[i % len(frames)]}")
+            sys.stdout.flush()
+            time.sleep(0.1)
+            i += 1
+        # 지우기
+        sys.stdout.write("\r" + " " * (len(self.text) + 4) + "\r")
+        sys.stdout.flush()
+
+    def start(self):
+        self._t.start()
+
+    def stop(self):
+        self._stop = True
+        try:
+            self._t.join(timeout=1.0)
+        except Exception:
+            pass
+
+
+def _progress_run(cmd: List[str], check: bool = False, label: Optional[str] = None) -> int:
+    """서브프로세스를 스피너와 함께 실행."""
+    sp = _Spinner(label or f"실행: {' '.join(cmd)}")
+    sp.start()
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    finally:
+        sp.stop()
+    if check and proc.returncode != 0:
+        if proc.stdout:
+            print(proc.stdout.strip())
+        if proc.stderr:
+            print(proc.stderr.strip())
+    return proc.returncode
+
 
 # ====== 공통 유틸 ======
 def b64lim(data: bytes, limit: int = 512 * 1024) -> str:
@@ -131,7 +179,10 @@ def ask_yes_no(prompt: str, default: bool = False) -> bool:
     return ans.startswith("y")
 
 
-def _run(cmd: List[str], check: bool = False) -> int:
+def _run(cmd: List[str], check: bool = False, show_progress: bool = False, progress_text: Optional[str] = None) -> int:
+    """기존 _run을 유지하면서 필요 시 진행 스피너 표시."""
+    if show_progress:
+        return _progress_run(cmd, check=check, label=progress_text)
     try:
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         if check and proc.returncode != 0:
@@ -549,7 +600,7 @@ def ensure_pip_package(pkg: str, import_name: Optional[str] = None) -> None:
     except Exception:
         pass
     if ask_yes_no(f"'{pkg}'가 설치되어 있지 않습니다. 설치할까요?", default=True):
-        rc = _run([sys.executable, "-m", "pip", "install", pkg], check=True)
+        rc = _run([sys.executable, "-m", "pip", "install", pkg], check=True, show_progress=True, progress_text=f"pip 설치: {pkg}")
         if rc != 0:
             print(f"[오류] '{pkg}' 설치 실패.")
             sys.exit(2)
@@ -563,7 +614,7 @@ def ensure_mitmdump_available() -> str:
     if mitmdump:
         return mitmdump
     if ask_yes_no("'mitmproxy'가 없습니다. 설치할까요?", default=True):
-        rc = _run([sys.executable, "-m", "pip", "install", "mitmproxy"], check=True)
+        rc = _run([sys.executable, "-m", "pip", "install", "mitmproxy"], check=True, show_progress=True, progress_text="pip 설치: mitmproxy")
         if rc == 0:
             mitmdump = shutil.which("mitmdump") or shutil.which("mitmdump.exe")
             if mitmdump:
@@ -604,25 +655,25 @@ def trust_mitm_ca() -> None:
         sys.exit(3)
 
     if SELECTED_OS == "windows":
-        rc = _run(["certutil", "-addstore", "-f", "ROOT", cer], check=True)
+        rc = _run(["certutil", "-addstore", "-f", "ROOT", cer], check=True, show_progress=True, progress_text="Windows 신뢰 저장소에 CA 추가")
         if rc != 0:
             print("[경고] Windows에 CA 추가 실패. 관리자 PowerShell로 다시 시도해 주세요.")
             sys.exit(3)
     elif SELECTED_OS == "macos":
         rc = _run(["sudo", "security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k",
-                   "/Library/Keychains/System.keychain", pem], check=True)
+                   "/Library/Keychains/System.keychain", pem], check=True, show_progress=True, progress_text="macOS 키체인에 CA 추가")
         if rc != 0:
             print("[경고] macOS에 CA 추가 실패.")
             sys.exit(3)
     elif SELECTED_OS == "ubuntu":
-        rc = _run(["sudo", "cp", pem, "/usr/local/share/ca-certificates/mitmproxy-ca.crt"], check=True)
-        rc |= _run(["sudo", "update-ca-certificates"], check=True)
+        rc = _run(["sudo", "cp", pem, "/usr/local/share/ca-certificates/mitmproxy-ca.crt"], check=True, show_progress=True, progress_text="CA 복사")
+        rc |= _run(["sudo", "update-ca-certificates"], check=True, show_progress=True, progress_text="CA 갱신")
         if rc != 0:
             print("[경고] Debian/Ubuntu에 CA 추가 실패.")
             sys.exit(3)
     elif SELECTED_OS == "rhel":
-        rc = _run(["sudo", "cp", pem, "/etc/pki/ca-trust/source/anchors/mitmproxy-ca.crt"], check=True)
-        rc |= _run(["sudo", "update-ca-trust"], check=True)
+        rc = _run(["sudo", "cp", pem, "/etc/pki/ca-trust/source/anchors/mitmproxy-ca.crt"], check=True, show_progress=True, progress_text="CA 복사")
+        rc |= _run(["sudo", "update-ca-trust"], check=True, show_progress=True, progress_text="CA 갱신")
         if rc != 0:
             print("[경고] RHEL/CentOS/Fedora에 CA 추가 실패.")
             sys.exit(3)
@@ -636,19 +687,21 @@ def untrust_mitm_ca(force: bool = True) -> None:
     global SELECTED_OS
     if SELECTED_OS == "windows":
         _run(["powershell", "-Command",
-              "Get-ChildItem Cert:\\LocalMachine\\Root | Where-Object { $_.Subject -like '*mitmproxy*' } | Remove-Item -Force"])
+              "Get-ChildItem Cert:\\LocalMachine\\Root | Where-Object { $_.Subject -like '*mitmproxy*' } | Remove-Item -Force"], show_progress=True, progress_text="Windows CA 제거")
     elif SELECTED_OS == "macos":
-        _run(["sudo", "security", "delete-certificate", "-c", "mitmproxy", "/Library/Keychains/System.keychain"])
+        _run(["sudo", "security", "delete-certificate", "-c", "mitmproxy", "/Library/Keychains/System.keychain"], show_progress=True, progress_text="macOS CA 제거")
     elif SELECTED_OS == "ubuntu":
-        _run(["sudo", "rm", "-f", "/usr/local/share/ca-certificates/mitmproxy-ca.crt"])
-        _run(["sudo", "update-ca-certificates", "--fresh"])
+        _run(["sudo", "rm", "-f", "/usr/local/share/ca-certificates/mitmproxy-ca.crt"], show_progress=True, progress_text="CA 파일 삭제")
+        _run(["sudo", "update-ca-certificates", "--fresh"], show_progress=True, progress_text="CA 갱신")
     elif SELECTED_OS == "rhel":
-        _run(["sudo", "rm", "-f", "/etc/pki/ca-trust/source/anchors/mitmproxy-ca.crt"])
-        _run(["sudo", "update-ca-trust"])
+        _run(["sudo", "rm", "-f", "/etc/pki/ca-trust/source/anchors/mitmproxy-ca.crt"], show_progress=True, progress_text="CA 파일 삭제")
+        _run(["sudo", "update-ca-trust"], show_progress=True, progress_text="CA 갱신")
 
 
 def fetch_mitm_ca_via_proxy(proxy_host: str, proxy_port: int) -> bool:
     """Proxy Setup Assistant: 지정 프록시 경유로 pem 다운로드."""
+    sp = _Spinner(f"mitm CA 다운로드 중 (프록시 {proxy_host}:{proxy_port})")
+    sp.start()
     try:
         import urllib.request
         MITM_DIR.mkdir(parents=True, exist_ok=True)
@@ -662,8 +715,10 @@ def fetch_mitm_ca_via_proxy(proxy_host: str, proxy_port: int) -> bool:
             f.write(data)
         return True
     except Exception as e:
-        print(f"[경고] mitm CA 다운로드 실패: {e}")
+        print(f"\n[경고] mitm CA 다운로드 실패: {e}")
         return False
+    finally:
+        sp.stop()
 
 # === 추가: mitm 기본 설정 파일 주입/원복 ===
 def ensure_mitm_config_defaults() -> None:
@@ -874,7 +929,7 @@ class SystemProxyManager:
                 ["sudo", "networksetup", "-setsecurewebproxystate", iface, "on"],
             ]
             ok = True
-            for c in cmds: ok &= (_run(c) == 0)
+            for c in cmds: ok &= (_run(c, show_progress=True, progress_text=f"macOS 프록시 적용: {' '.join(c[:3])}") == 0)
             if ok:
                 self.did_configure_nonwin = True
                 print("[proxy] macOS 시스템 프록시 설정 완료.")
@@ -888,7 +943,7 @@ class SystemProxyManager:
                 ["gsettings", "set", "org.gnome.system.proxy.https", "port", str(self.port)],
             ]
             ok = True
-            for c in cmds: ok &= (_run(c) == 0)
+            for c in cmds: ok &= (_run(c, show_progress=True, progress_text=f"GNOME 프록시 적용: {' '.join(c[:4])}") == 0)
             if ok:
                 self.did_configure_nonwin = True
                 print("[proxy] GNOME 시스템 프록시 설정 완료.")
@@ -899,11 +954,11 @@ class SystemProxyManager:
             windows_proxy_disable()
             print("[proxy] Windows 시스템 프록시 비활성화.")
         elif self.os == "macos":
-            _run(["sudo", "networksetup", "-setwebproxystate", self.macos_iface, "off"])
-            _run(["sudo", "networksetup", "-setsecurewebproxystate", self.macos_iface, "off"])
+            _run(["sudo", "networksetup", "-setwebproxystate", self.macos_iface, "off"], show_progress=True, progress_text="macOS 웹 프록시 off")
+            _run(["sudo", "networksetup", "-setsecurewebproxystate", self.macos_iface, "off"], show_progress=True, progress_text="macOS 보안 웹 프록시 off")
             print("[proxy] macOS 시스템 프록시 비활성화.")
         elif self.os in ("ubuntu", "rhel"):
-            _run(["gsettings", "set", "org.gnome.system.proxy", "mode", "none"])
+            _run(["gsettings", "set", "org.gnome.system.proxy", "mode", "none"], show_progress=True, progress_text="GNOME 프록시 off")
             print("[proxy] GNOME 시스템 프록시 비활성화.")
 
     def disable(self) -> None:
@@ -912,11 +967,11 @@ class SystemProxyManager:
             _win_proxy_restore(self.backup)
             print("[proxy] 이전 프록시 설정을 복원했습니다.")
         elif self.os == "macos" and self.did_configure_nonwin:
-            _run(["sudo", "networksetup", "-setwebproxystate", self.macos_iface, "off"])
-            _run(["sudo", "networksetup", "-setsecurewebproxystate", self.macos_iface, "off"])
+            _run(["sudo", "networksetup", "-setwebproxystate", self.macos_iface, "off"], show_progress=True, progress_text="macOS 웹 프록시 off")
+            _run(["sudo", "networksetup", "-setsecurewebproxystate", self.macos_iface, "off"], show_progress=True, progress_text="macOS 보안 웹 프록시 off")
             print("[proxy] macOS 시스템 프록시를 비활성화했습니다.")
         elif self.os in ("ubuntu", "rhel") and self.did_configure_nonwin:
-            _run(["gsettings", "set", "org.gnome.system.proxy", "mode", "none"])
+            _run(["gsettings", "set", "org.gnome.system.proxy", "mode", "none"], show_progress=True, progress_text="GNOME 프록시 off")
             print("[proxy] GNOME 시스템 프록시를 비활성화했습니다.")
 
 
@@ -940,26 +995,31 @@ def _wait_proxy_ready(host: str, port: int, proc, log_path: Path, timeout: float
 
 
 # ====== 캡처 실행 (Proxy/Browser) ======
-def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, login_url: Optional[str], suppress_untrust_prompt: bool = False) -> None:
-    """Proxy Capture"""
+def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, login_url: Optional[str], suppress_untrust_prompt: bool = False, *, auto_setup_during_capture: bool = False) -> None:
+    """Proxy Capture
+    auto_setup_during_capture=True 이면, mitmdump를 먼저 띄운 뒤 **3번(Preset)**을 캡처 도중 실행하고,
+    그 완료 이후에 브라우저를 띄웁니다.
+    """
     # 1) 필요한 패키지 선제 설치 (프록시/CA 적용 이전)
     mitmdump = ensure_mitmdump_available()
     if login_url:
         ensure_pip_package("selenium", "selenium")
 
-    # 2) CA 파일 확보 및 신뢰 추가
+    # 2) CA 파일 확보 (신뢰는 auto_setup 여부에 따라 1번/3번 중 한쪽에서 수행)
     if not (CA_PEM.exists() or CA_CER.exists()):
         ensure_mitm_ca_files(mitmdump)
-    trust_mitm_ca()  # 사용자 동의 후
 
     aw = ArtifactWriter(PROXY_ARTIFACT_DIR, "Proxy Capture")
 
     tmp_flows = Path(tempfile.mkstemp(prefix="flows_", suffix=".mitm")[1])
     tmp_log = Path(tempfile.mkstemp(prefix="mitmdump_", suffix=".log")[1])
 
-    # 3) 시스템 프록시 적용
-    spm = SystemProxyManager(listen_host, listen_port)
-    spm.enable()
+    # 3) 시스템 프록시: auto_setup이 아니면 여기서 적용 (auto_setup이면 3번에서 적용)
+    spm: Optional[SystemProxyManager] = None
+    if not auto_setup_during_capture:
+        trust_mitm_ca()  # 사용자 동의 후
+        spm = SystemProxyManager(listen_host, listen_port)
+        spm.enable()
 
     cmd = [
         mitmdump,
@@ -979,6 +1039,13 @@ def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, lo
     with open(tmp_log, "w", encoding="utf-8") as lf:
         proc = subprocess.Popen(cmd, stdout=lf, stderr=lf)
     _wait_proxy_ready(listen_host, listen_port, proc, tmp_log)
+
+    # === 캡처 도중 Proxy Setup Assistant 자동 수행(같은 PC 시나리오) ===
+    if auto_setup_during_capture:
+        print("\n[자동] Proxy Setup Assistant(3번)을 캡처 도중 실행합니다.")
+        # 3번에서 시스템 프록시/CA/compose/컨테이너 주입/mitm 설정을 수행
+        run_proxy_setup_assistant(preset_host=listen_host, preset_port=listen_port)
+        # 사용자가 원하는 순서: 프록시 자동 설정이 끝난 다음 브라우저를 켠다.
 
     driver = None
     try:
@@ -1136,7 +1203,8 @@ def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, lo
     except Exception as e:
         print(f"[오류] 플로우 파일 처리 중 예외: {e}")
     finally:
-        spm.disable()
+        if spm is not None:
+            spm.disable()
         for p in (tmp_flows, tmp_log):
             try:
                 if p.exists():
@@ -1292,8 +1360,6 @@ def run_browser_session_capture(target: str) -> None:
             pass
         aw.finalize(wired=wired, mode="external", extra={"target_url": target})
         print(f"[완료] 산출물: {aw.outdir}")
-
-
 # ====== (신규) docker-compose.yml 자동 수정/원복 유틸 ======
 def _compose_find_path() -> Optional[Path]:
     for name in ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"):
@@ -1432,10 +1498,6 @@ def compose_modify_services(compose_path: Path, proxy_host: str, proxy_port: int
     data["services"] = services
     _compose_dump(compose_path, data)
     print(f"[compose] docker-compose 수정 완료 → {compose_path}")
-    print("")
-    print("[원복 가이드(수동)]")
-    print("  Linux/macOS: rm -f docker-compose.yml && mv docker-compose.yml.bak docker-compose.yml")
-    print("  Windows PowerShell: Remove-Item docker-compose.yml; Rename-Item docker-compose.yml.bak docker-compose.yml")
     if is_loopback:
         print("[안내] 로컬 프록시를 감지하여 컨테이너에는 host.docker.internal로 연결되도록 설정했습니다.")
     print("")
@@ -1522,7 +1584,7 @@ def docker_configure_container(container: str, proxy_host: str, proxy_port: int,
         f'echo "export NO_PROXY={no_proxy}" >> /etc/profile.d/proxy.sh && '
         'chmod 644 /etc/profile.d/proxy.sh'
     ]
-    _run(cmd1)
+    _run(cmd1, show_progress=True, progress_text=f"컨테이너 {container}: 프록시 env 주입")
 
     cmd_fetch = [
         "docker", "exec", container, "/bin/sh", "-lc",
@@ -1536,7 +1598,7 @@ def docker_configure_container(container: str, proxy_host: str, proxy_port: int,
         '(command -v update-ca-certificates >/dev/null && update-ca-certificates) || '
         '(command -v update-ca-trust >/dev/null && update-ca-trust) || true'
     ]
-    _run(cmd_fetch)
+    _run(cmd_fetch, show_progress=True, progress_text=f"컨테이너 {container}: CA 설치 및 반영")
     print(f"[docker] 컨테이너 '{container}'에 프록시/CA 설정을 적용했습니다.")
 
 
@@ -1550,7 +1612,7 @@ def docker_revert_container(container: str) -> None:
         '(command -v update-ca-trust >/dev/null && update-ca-trust) || true; '
         "sed -i '/host.docker.internal/d' /etc/hosts 2>/dev/null || true"
     ]
-    _run(cmd)
+    _run(cmd, show_progress=True, progress_text=f"컨테이너 {container}: 프록시/CA 원복")
     print(f"[docker] 컨테이너 '{container}'의 프록시/CA 주입을 제거했습니다.")
 
 
@@ -1625,10 +1687,13 @@ def run_proxy_setup_assistant(preset_host: Optional[str] = None, preset_port: Op
         modified_services = compose_modify_services(compose_path, proxy_host, proxy_port)
         # 수정이 있었다면 up -d 자동
         if modified_services:
+            up_cmd = None
             if shutil.which("docker") and _run(["docker", "compose", "version"]) == 0:
-                _run(["docker", "compose", "up", "-d"])
+                up_cmd = ["docker", "compose", "up", "-d"]
             elif shutil.which("docker-compose"):
-                _run(["docker-compose", "up", "-d"])
+                up_cmd = ["docker-compose", "up", "-d"]
+            if up_cmd:
+                _run(up_cmd, show_progress=True, progress_text="docker compose 배포(up -d)")
             else:
                 print("[경고] docker compose/ docker-compose 명령을 찾지 못했습니다. 수동으로 배포하세요.")
         else:
@@ -1691,10 +1756,13 @@ def run_proxy_setup_revert() -> None:
     if compose_path:
         reverted = compose_revert_auto(compose_path)
         if reverted:
+            up_cmd = None
             if shutil.which("docker") and _run(["docker", "compose", "version"]) == 0:
-                _run(["docker", "compose", "up", "-d"])
+                up_cmd = ["docker", "compose", "up", "-d"]
             elif shutil.which("docker-compose"):
-                _run(["docker-compose", "up", "-d"])
+                up_cmd = ["docker-compose", "up", "-d"]
+            if up_cmd:
+                _run(up_cmd, show_progress=True, progress_text="docker compose 재배포(up -d)")
             else:
                 print("[경고] docker compose/ docker-compose 명령을 찾지 못했습니다. 수동으로 배포하세요.")
     else:
@@ -1776,11 +1844,12 @@ def main() -> None:
         if open_login:
             login_url = input("로그인 페이지 URL을 입력하세요 (예: example.com/login): ").strip() or None
 
-        # 같은 PC일 땐 1번 종료 후 3번을 자동으로 이어서 수행
-        run_proxy_capture(listen_host, listen_port, ssl_insecure, login_url, suppress_untrust_prompt=same_pc)
-        if same_pc:
-            print("\n[자동] Proxy Setup Assistant(3번)을 이어서 실행합니다.")
-            run_proxy_setup_assistant(preset_host=listen_host, preset_port=listen_port)
+        # 같은 PC일 땐 **캡처 도중** 3번을 자동 수행하고, 완료 후 브라우저를 띄움
+        run_proxy_capture(
+            listen_host, listen_port, ssl_insecure, login_url,
+            suppress_untrust_prompt=same_pc,
+            auto_setup_during_capture=same_pc
+        )
         return
 
     if choice == "2":
