@@ -320,7 +320,7 @@ class ArtifactWriter:
         return out
 
     @staticmethod
-    def _merge_oauth_tokens_by_key_value(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]]:
+    def _merge_oauth_tokens_by_key_value(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         key+value 기준 통합.
         - where는 콤마 병합
