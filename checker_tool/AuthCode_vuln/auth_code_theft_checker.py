@@ -1,470 +1,335 @@
 """
-auth_code_theft_checker.py
+auth_code_theft_checker.py — Authorization Code Theft Vulnerability module
+===========================================================================
+Scope
+-----
+Detects *authorization code theft* risks in OAuth 2.0 / OIDC code flow,
+grouped as A/B/C sections to align with the team's OIDC nonce tool.
 
-Single-file "vuln check module" to detect **Authorization Code Theft** risks in OAuth 2.0 / OIDC flows.
-- Scope: ONLY the authorization code–theft vector set.
-- Input: DataController passes parsed HTTP packet details as a Python dict (see DATA CONTRACT below).
-- Output: List of structured findings + pretty text report.
-
-Standards basis (핵심):
-  - RFC 6749 (OAuth 2.0 Core) §§3.1.2, 4.1.2, 4.1.3, 10.6, 10.15
-  - RFC 7636 (PKCE)
-  - RFC 8252 (Native Apps)
-  - RFC 9101 (JAR), RFC 9126 (PAR)
-  - RFC 9207 (`iss` response parameter)
-  - RFC 9700 / BCP 240 (OAuth 2.0 Security BCP)
-  - OIDC Core (redirect_uri Simple String Comparison = exact match MUST)
-  - OAuth 2.0 Form Post Response Mode (OIDF)
-  - PortSwigger OAuth labs (공격 흐름 참고)
-
-==========================
-DATA CONTROLLER — 주의!
-==========================
-이 모듈은 '패킷을 직접 캡처'하지 않습니다. Data Controller가 캡처/파싱한 값을
-아래 trace 딕셔너리 포맷으로 넘겨야 합니다(최소 필수 필드는 아래 주석 참고).
-
+Normative anchors (mapping refs; enforcement is out-of-band):
+- RFC 6749 §3.1.2, §4.1.2, §4.1.3, §10 (redirect_uri, code, state)
+- RFC 7636 (PKCE) — S256 only
+- RFC 8252 (native apps loopback/claimed-https)
+- RFC 8705 (mTLS), RFC 9449 (DPoP) — hardening/mitigation
+- RFC 9207 (iss in authorization response) — Mix-Up mitigation
+- OIDC Core: "redirect_uri Simple String Comparison", Form Post Response Mode
+- OAuth 2.0 Form Post Response Mode (OIDF)
+- BCP 9700 (best practices) — general hardening guidance
 """
 
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
-import math
-import urllib.parse as up
+from __future__ import annotations
 
-SEV_HIGH = "HIGH"
-SEV_MEDIUM = "MEDIUM"
-SEV_LOW = "LOW"
-SEV_INFO = "INFO"
+import json, re, math
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse, parse_qs
+
+MODULE_KEY = "authcode"
+
+LABELS = {"Pass":"Pass","Fail":"Fail","Advisory":"Advisory","N/A":"N/A","Info":"Info"}
+
+def _parse_query(url: str) -> Dict[str, str]:
+    if not url:
+        return {}
+    p = urlparse(url)
+    q = parse_qs(p.query)
+    frag = parse_qs(p.fragment) if p.fragment else {}
+    merged = {}
+    for src in (q, frag):
+        for k, v in src.items():
+            if v: merged[k] = v[0]
+    return merged
+
+def _is_loopback(host: str) -> bool:
+    if not host: return False
+    h = host.lower()
+    return h in ("127.0.0.1","localhost","::1") or h.startswith("127.")
+
+def _has_wildcard(s: str) -> bool:
+    return bool(re.search(r"[\\*\\{\\}]", s or ""))
+
+def _looks_high_entropy(s: str) -> bool:
+    # Heuristic only; per team rule we won't emit numeric entropy.
+    if not s: return False
+    unique = len(set(s))
+    return (len(s) >= 16) and (unique >= 8)
 
 @dataclass
-class Finding:
-    id: str
-    title: str
-    severity: str
-    description: str
-    evidence: Optional[str] = None
-    remediation: Optional[str] = None
-    references: List[str] = field(default_factory=list)
+class AuthorizationRequest:
+    url: Optional[str] = None
+    params: Optional[Dict[str, Any]] = None
+    ts: Optional[int] = None
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "AuthorizationRequest":
+        url = d.get("url")
+        params = d.get("params") or {}
+        if url and not params: params = _parse_query(url)
+        if "response_type" in params and isinstance(params["response_type"], str):
+            params["response_type"] = ' '.join(params["response_type"].split())
+        return cls(url=url, params=params, ts=d.get("ts"))
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "id": self.id,
-            "title": self.title,
-            "severity": self.severity,
-            "description": self.description,
-            "evidence": self.evidence,
-            "remediation": self.remediation,
-            "references": self.references,
-        }
+@dataclass
+class AuthorizationResponse:
+    location: Optional[str] = None
+    form: Optional[Dict[str, Any]] = None
+    params: Optional[Dict[str, Any]] = None
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "AuthorizationResponse":
+        location = d.get("location")
+        form = d.get("form")
+        params = d.get("params") or {}
+        if location and not params: params = _parse_query(location)
+        return cls(location=location, form=form, params=params)
 
-def _host(url: str) -> Optional[str]:
-    try:
-        return up.urlparse(url).netloc
-    except Exception:
-        return None
+@dataclass
+class TokenRequest:
+    body: Optional[Dict[str, Any]] = None
+    headers: Optional[Dict[str, Any]] = None
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "TokenRequest":
+        return cls(body=d.get("body") or {}, headers=d.get("headers") or {})
 
-def _scheme(url: str) -> Optional[str]:
-    try:
-        return up.urlparse(url).scheme
-    except Exception:
-        return None
+@dataclass
+class TokenResponse:
+    json: Optional[Dict[str, Any]] = None
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "TokenResponse":
+        return cls(json=d.get("json") or {})
 
-def _entropy_bits_per_char(s: str) -> float:
-    """Shannon entropy(bits/char) — 추측 난이도 점검(참고용)."""
-    if not s:
-        return 0.0
-    from collections import Counter
-    cnt = Counter(s)
-    n = len(s)
-    return -sum((c/n) * math.log2(c/n) for c in cnt.values())
+@dataclass
+class FlowBundle:
+    discovery: Optional[Dict[str, Any]]
+    authorization_request: AuthorizationRequest
+    authorization_response: AuthorizationResponse
+    callback_request: Optional[Dict[str, Any]]
+    token_request: Optional[TokenRequest]
+    token_response: Optional[TokenResponse]
+    previous_nonces: List[str]
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "FlowBundle":
+        return cls(
+            discovery=d.get("discovery") or {},
+            authorization_request=AuthorizationRequest.from_dict(d.get("authorization_request") or {}),
+            authorization_response=AuthorizationResponse.from_dict(d.get("authorization_response") or {}),
+            callback_request=d.get("callback_request") or {},
+            token_request=TokenRequest.from_dict(d.get("token_request") or {}),
+            token_response=TokenResponse.from_dict(d.get("token_response") or {}),
+            previous_nonces=list(d.get("previous_nonces") or []),
+        )
 
-class AuthCodeTheftChecker:
-    """
-    사용법: AuthCodeTheftChecker().check(trace_dict) -> List[Finding]
+def _detect_flow_type(params: Dict[str, Any]) -> str:
+    scope = (params.get("scope") or "").lower()
+    rt = (params.get("response_type") or "").lower()
+    parts = set(rt.replace('+',' ').split())
+    if "openid" not in scope:
+        return "unknown"
+    if "code" in parts and "id_token" in parts: return "hybrid"
+    if "id_token" in parts: return "implicit"
+    if "code" in parts: return "code"
+    return "unknown"
 
-    === DATA CONTRACT(요약) ===
-    trace = {
-      "as_issuer_expected": "https://as.example",                 # OIDC Discovery issuer 등(권장)
-      "registered_redirect_uris": ["https://client.tld/cb"],      # (필수) 사전등록 redirect_uri 목록
+def run_checks(raw: Dict[str, Any]) -> Dict[str, Any]:
+    bundle = FlowBundle.from_dict(raw)
+    ar = bundle.authorization_request.params or {}
+    ap = bundle.authorization_response.params or {}
+    tr = (bundle.token_request.body or {}) if bundle.token_request else None
+    flow_type = _detect_flow_type(ar)
 
-      "authorization_request": {                                  # (필수) /authorize 요청에서 추출
-         "client_id": "my-client",
-         "redirect_uri": "https://client.tld/cb",
-         "response_type": "code",
-         "response_mode": "query|fragment|form_post|<없음>",
-         "state": "XYZ...",                                       # (권장)
-         "code_challenge": "AbCd...",                             # (PKCE시 권장)
-         "code_challenge_method": "S256|plain|<없음>",
-         "is_oidc": True,                                         # (권장) scope에 openid 포함 여부
-         "nonce": "abc123...",                                    # (권장) OIDC면
-         "request_uri": "https://req-obj.tld/...",                # (선택) by-reference 사용시
-         "par_used": False                                        # (선택) PAR 사용 여부
-      },
+    failures: List[Dict[str,Any]] = []
+    warnings: List[Dict[str,Any]] = []
+    checklist = {"A":{}, "B":{}, "C":{}}
 
-      "authorization_response": {                                 # (필수) AS→클라 콜백 단계
-         "delivery": "query|fragment|form_post",                  # 코드 전달 방식
-         "redirect_to": "https://client.tld/cb?code=...&state=...",
-         "code_present": True,
-         "state": "XYZ...",
-         "iss": "https://as.example",                             # (선택) RFC 9207 'iss'
-         "redirect_chain": [                                      # (선택) 콜백 이후 3xx 체인 추적
-             "https://client.tld/cb?code=...",
-             "https://client.tld/redirect?next=https://attacker.tld"
-         ]
-      },
+    def fail(code, title, detail, evidence=None):
+        failures.append({"code":code,"title":title,"detail":detail,"evidence":evidence})
+    def warn(code, title, detail, evidence=None):
+        warnings.append({"code":code,"title":title,"detail":detail,"evidence":evidence})
 
-      "callback_page_requests": [                                 # (선택) 콜백 페이지 서브리소스 요청
-         {"url": "https://cdn.example/app.js",
-          "headers": {"Referer": "https://client.tld/cb?code=..."}}
-      ],
+    # ---------------- A. Authorization / Redirect ----------------
+    redirect_uri = ar.get("redirect_uri")
+    ru_obs = {"redirect_uri": redirect_uri}
+    # A1 redirect_uri safety (absolute, https except loopback, no fragment, no wildcard)
+    if not redirect_uri:
+        checklist["A"]["redirect_uri_present"] = {"result":"Fail", "observed":ru_obs}
+        fail("C1A", "Missing redirect_uri in authorization request",
+             "Authorization Request MUST include redirect_uri for registered clients.", ru_obs)
+    else:
+        pu = urlparse(redirect_uri)
+        ok_abs = bool(pu.scheme and pu.netloc)
+        ok_fragment = pu.fragment == ""
+        ok_scheme = (pu.scheme.lower() == "https") or (pu.scheme.lower()=="http" and _is_loopback(pu.hostname or ""))
+        ok_wild = not _has_wildcard(redirect_uri)
+        res = "Pass" if (ok_abs and ok_fragment and ok_scheme and ok_wild) else "Fail"
+        note = []
+        if not ok_abs: note.append("절대 URI 필요")
+        if not ok_fragment: note.append("fragment 금지")
+        if not ok_scheme: note.append("HTTPS 강제(네이티브 loopback 예외)")
+        if not ok_wild: note.append("와일드카드 금지")
+        checklist["A"]["redirect_uri_safety"] = {"result":res, "note":"; ".join(note) if note else None, "observed":ru_obs}
+        if res=="Fail":
+            fail("C1", "Unsafe redirect_uri", "등록·정확 문자열 일치 및 HTTPS(네이티브 loopback 예외), 와일드카드/fragment 금지.", {"parsed":redirect_uri})
 
-      "token_request": {                                          # (권장) /token 요청에서 추출
-         "client_id": "my-client",
-         "grant_type": "authorization_code",
-         "code": "abc...",
-         "redirect_uri": "https://client.tld/cb",                 # authz에 보냈다면 여기서도 MUST
-         "code_verifier": "....",                                 # PKCE시 필수
-         "client_auth": "client_secret_basic|mtls|none"
-      },
+    # A2 response_mode=form_post preference + code exposure in URL
+    resp_mode = (ar.get("response_mode") or "").lower()
+    code_in_url = bool(ap.get("code") or (bundle.authorization_response.location and "code=" in bundle.authorization_response.location))
+    if resp_mode == "form_post":
+        checklist["A"]["form_post_used"] = {"result":"Pass"}
+    else:
+        if code_in_url:
+            checklist["A"]["form_post_used"] = {"result":"Fail", "note":"code exposed in URL"}
+            fail("C2", "Authorization code in URL (front-channel)",
+                 "response_mode=form_post를 사용해 로그/Referer/히스토리 누출을 차단하세요.", 
+                 {"location": bundle.authorization_response.location})
+        else:
+            checklist["A"]["form_post_used"] = {"result":"Advisory", "note":"response_mode가 form_post 아님"}
 
-      "token_response": {                                         # (선택)
-         "token_type": "Bearer",
-         "dpop": False,
-         "mtls": False
-      },
+    # A3 Mix-Up mitigation: iss in authorization response
+    iss = ap.get("iss")
+    if iss:
+        checklist["A"]["iss_in_authorization_response"] = {"result":"Pass"}
+    else:
+        checklist["A"]["iss_in_authorization_response"] = {"result":"Fail"}
+        fail("C3", "Missing iss in authorization response (RFC 9207)",
+             "인가 응답에 'iss'를 포함해 발신자(AS)를 식별하고 Mix-Up을 방지하세요.", {"observed_params": list(ap.keys())})
 
-      "environment": {                                            # (선택)
-         "is_native_app": False,
-         "loopback_used": False,
-         "claimed_https_scheme": False
-      }
+    # A4 state presence & apparent entropy (for injection/correlation)
+    st = ar.get("state")
+    if st:
+        checklist["A"]["state_presence"] = {"result":"Pass", "note":("고엔트로피/예측 불가" if _looks_high_entropy(st) else "엔트로피 불충분 의심")}
+    else:
+        checklist["A"]["state_presence"] = {"result":"Fail"}
+        fail("C6A", "Missing state", "상관관계 강화를 위해 고엔트로피 state 사용.", None)
+
+    # ---------------- B. PKCE & /token Binding --------------------
+    ccm = (ar.get("code_challenge_method") or "").upper()
+    cc = ar.get("code_challenge")
+    if cc and ccm == "S256":
+        checklist["B"]["pkce_s256_in_request"] = {"result":"Pass"}
+    elif cc and ccm == "PLAIN":
+        checklist["B"]["pkce_s256_in_request"] = {"result":"Fail", "note":"plain 허용은 다운그레이드"}
+        fail("C4", "PKCE downgrade to plain", "PKCE는 S256만 허용.", {"code_challenge_method": ccm})
+    else:
+        checklist["B"]["pkce_s256_in_request"] = {"result":"Fail", "note":"code_challenge 누락 또는 method≠S256"}
+        fail("C4", "PKCE missing", "코드 플로우에 PKCE(S256) 필수.", {"response_type": ar.get("response_type")})
+
+    # /token must include code_verifier when PKCE used
+    if cc:
+        if not tr:
+            checklist["B"]["token_has_code_verifier"] = {"result":"N/A", "note":"token_request body 관찰 불가"}
+        elif tr.get("code_verifier"):
+            checklist["B"]["token_has_code_verifier"] = {"result":"Pass"}
+        else:
+            checklist["B"]["token_has_code_verifier"] = {"result":"Fail"}
+            fail("C4B", "Missing code_verifier at /token", "/token에 code_verifier 필수.", {"token_request_keys": list(tr.keys())})
+    else:
+        checklist["B"]["token_has_code_verifier"] = {"result":"N/A"}
+
+    # /token must re-submit the SAME redirect_uri if it was present
+    if redirect_uri:
+        if not tr:
+            checklist["B"]["token_resent_redirect_uri"] = {"result":"N/A", "note":"token_request body 관찰 불가"}
+        else:
+            tr_redirect = tr.get("redirect_uri")
+            if tr_redirect is None:
+                checklist["B"]["token_resent_redirect_uri"] = {"result":"Fail", "note":"redirect_uri 미재제출"}
+                fail("C5", "redirect_uri not re-submitted at /token", "RFC 6749 §4.1.3: 동일 redirect_uri 재제출(MUST).", {})
+            elif tr_redirect != redirect_uri:
+                checklist["B"]["token_resent_redirect_uri"] = {"result":"Fail", "note":"불일치"}
+                fail("C5", "redirect_uri mismatch at /token", "인가요청과 동일 값이어야 함.", {"auth": redirect_uri, "token": tr_redirect})
+            else:
+                checklist["B"]["token_resent_redirect_uri"] = {"result":"Pass"}
+    else:
+        checklist["B"]["token_resent_redirect_uri"] = {"result":"N/A"}
+
+    # ---------------- C. Leakage minimization & hardening -------------
+    # C1 Logs/Referer/History risk summary
+    if code_in_url:
+        checklist["C"]["front_channel_leak_risk"] = {"result":"Fail", "note":"URL에 code 존재(로그/Referer/히스토리 유출 위험)"}
+    else:
+        checklist["C"]["front_channel_leak_risk"] = {"result":"Pass"}
+
+    # C2 Referer policy (if subresources include external origins and code in URL -> high risk)
+    subresources = (bundle.callback_request or {}).get("subresources") or []
+    external_loaded = [u for u in subresources if u and urlparse(u).netloc]
+    if code_in_url and external_loaded:
+        checklist["C"]["referer_leak_risk"] = {"result":"Fail", "note":f"콜백에서 외부 서브리소스 {len(external_loaded)}개 로드"}
+        warn("C6", "Referer may leak code to third-party domains",
+             "콜백에서 외부 리소스를 최소화하고 Referrer-Policy를 엄격히 설정.", {"samples": external_loaded[:3]})
+    else:
+        checklist["C"]["referer_leak_risk"] = {"result":"Advisory" if code_in_url else "N/A"}
+
+    # C3 JAR/PAR usage check (best-effort)
+    if ar.get("request_uri") or ar.get("request"):
+        checklist["C"]["jar_par_usage"] = {"result":"Pass", "note":"요청 객체 관찰(무결성은 별도 검증)"}
+    else:
+        checklist["C"]["jar_par_usage"] = {"result":"Advisory", "note":"JAR/PAR 미사용(권장)"}
+
+    # C4 mTLS/DPoP information (mitigation)
+    tk_json = (bundle.token_response.json or {}) if bundle.token_response else {}
+    token_type = (tk_json.get("token_type") or "Bearer").title()
+    dpop_hint = "dpop" in json.dumps(tk_json).lower()
+    m_tls = False  # not observable here
+    checklist["C"]["sender_constrained_tokens"] = {"result":"Info", "note": f"token_type={token_type}; DPoP_hint={dpop_hint}; mTLS={m_tls}"}
+
+    ok = len(failures)==0
+    observed = {
+        "flow_type": flow_type,
+        "redirect_uri": redirect_uri,
+        "response_mode": ar.get("response_mode"),
+        "iss_in_response": bool(iss),
+        "pkce": {"present": bool(ar.get("code_challenge")), "method": ar.get("code_challenge_method")},
+        "token_request_keys": list(tr.keys()) if tr else [],
+        "state_present": bool(st),
+        "code_in_url": code_in_url
     }
-    """
+    return {
+        "ok": ok,
+        "failures": failures,
+        "warnings": warnings,
+        "flow_type": flow_type,
+        "observed": observed,
+        "checklist": checklist
+    }
 
-    def __init__(self):
-        self.findings: List[Finding] = []
+def pretty_report(res: Dict[str, Any]) -> str:
+    j = res
+    out = []
+    out.append(f"Flow: {j.get('flow_type')}  Overall: {'PASS' if j.get('ok') else 'FAIL'}\n")
 
-    def _add(self, *args, **kwargs):
-        self.findings.append(Finding(*args, **kwargs))
+    def dump_section(title, sec):
+        out.append(f"== {title} ==")
+        for k,v in sec.items():
+            line = f"- {k}: {v.get('result')}"
+            out.append(line)
+            note = v.get("note") or v.get("observed")
+            if note: out.append(f"  • {note}")
+        out.append("")
+    out.append("")
+    dump_section("A. Authorization / Redirect", j["checklist"]["A"])
+    dump_section("B. PKCE & /token Binding", j["checklist"]["B"])
+    dump_section("C. Leakage & Hardening", j["checklist"]["C"])
 
-    def check(self, trace: Dict[str, Any]) -> List[Finding]:
-        self.findings = []
+    if j.get("failures"):
+        out.append("Failures:")
+        for f in j["failures"]:
+            out.append(f" - [{f['code']}] {f['title']} :: {f['detail']} :: evidence={f.get('evidence')}")
+        out.append("")
+    if j.get("warnings"):
+        out.append("Warnings:")
+        for w in j["warnings"]:
+            out.append(f" - [{w['code']}] {w['title']} :: {w['detail']} :: evidence={w.get('evidence')}")
+        out.append("")
 
-        reg_uris = set(trace.get("registered_redirect_uris") or [])
-        authz_req = trace.get("authorization_request") or {}
-        authz_res = trace.get("authorization_response") or {}
-        cb_reqs  = trace.get("callback_page_requests") or []
-        token_req = trace.get("token_request") or {}
-        env = trace.get("environment") or {}
+    return "\n".join(out)
 
-        ru = authz_req.get("redirect_uri")
+def to_markdown(res: Dict[str, Any]) -> str:
+    txt = pretty_report(res)
+    return "```text\n" + txt.replace("```","\\`\\`\\`") + "\n```"
 
-        # [1] redirect_uri 등록/정확일치 (RFC 6749, OIDC Core Simple String Comparison)
-        if not reg_uris:
-            self._add(
-                id="AC-RED-000",
-                title="registered_redirect_uris 미제공",
-                severity=SEV_INFO,
-                description="정확 일치 검증을 위해 사전등록 redirect_uri 허용목록이 필요합니다.",
-                remediation="클라이언트 레지스트리의 허용 목록을 'registered_redirect_uris'로 전달하세요.",
-                references=["RFC 6749 §3.1.2", "OIDC Core (Simple String Comparison)"]
-            )
-        else:
-            if not ru:
-                self._add(
-                    id="AC-RED-001",
-                    title="인가요청에 redirect_uri 없음",
-                    severity=SEV_LOW,
-                    description="여러 콜백이 등록된 클라이언트라면 미지정은 리스크가 커질 수 있습니다.",
-                    remediation="인가요청에 redirect_uri를 명시하고, 사전등록된 값과 정확히 일치하도록 하세요.",
-                    references=["RFC 6749 §3.1.2.2, §4.1.2", "RFC 9700(BCP)"]
-                )
-            elif ru not in reg_uris:
-                self._add(
-                    id="AC-RED-002",
-                    title="사전등록 목록에 없는 redirect_uri",
-                    severity=SEV_HIGH,
-                    description=f"인가요청 redirect_uri가 등록 허용목록과 일치하지 않습니다.",
-                    evidence=f"allowlist={list(reg_uris)}; seen={ru}",
-                    remediation="와일드카드/서브도메인 허용 없이, 사전등록 값에 '정확히' 일치하는 경우만 허용하세요.",
-                    references=["RFC 6749 §3.1.2", "OIDC Core", "RFC 9700(BCP)"]
-                )
-
-        # [2] 콜백 이후 오픈 리다이렉트 체인 (RFC 6749 §10.15)
-        chain = authz_res.get("redirect_chain") or []
-        if chain and ru:
-            original = _host(ru)
-            for hop in chain[1:]:
-                if original and _host(hop) and _host(hop) != original:
-                    self._add(
-                        id="AC-RED-003",
-                        title="콜백 경로에서 오픈 리다이렉트 체인 감지",
-                        severity=SEV_HIGH,
-                        description="등록 콜백 이후 다른 호스트로 리다이렉트됩니다(코드 유출 위험).",
-                        evidence=f"chain={chain}",
-                        remediation="콜백 경로에서 외부 도메인으로 리다이렉션하지 마세요(정적/동일 출처 유지).",
-                        references=["RFC 6749 §10.15", "RFC 9700(BCP)", "PortSwigger OAuth labs"]
-                    )
-                    break
-
-        # [3] 코드 전달 방식: URL(query/fragment) vs form_post (OIDF Form Post, BCP)
-        delivery = (authz_res.get("delivery") or authz_req.get("response_mode") or "").lower()
-        if delivery in ("", "query", "fragment"):
-            self._add(
-                id="AC-DEL-001",
-                title="인가코드가 URL로 전달됨(query/fragment)",
-                severity=SEV_MEDIUM,
-                description="URL에 노출된 코드는 로그/Referer/브라우저 히스토리로 누수될 수 있습니다.",
-                remediation="코드 흐름에는 response_mode=form_post 사용을 권장합니다.",
-                references=["OIDF Form Post Response Mode", "RFC 9700(BCP)"]
-            )
-
-        # [4] 콜백 페이지의 Referer 누수 점검 (BCP, OIDF Form Post)
-        for r in cb_reqs:
-            referer = (r.get("headers") or {}).get("Referer") or (r.get("headers") or {}).get("referer")
-            if referer and "code=" in referer and ru:
-                if _host(r.get("url")) and _host(r.get("url")) != _host(ru):
-                    self._add(
-                        id="AC-DEL-002",
-                        title="서드파티로 Referer에 코드 유출",
-                        severity=SEV_HIGH,
-                        description="콜백 페이지가 외부 리소스를 로드하며 Referer에 인가코드가 포함되었습니다.",
-                        evidence=f"request={r.get('url')}, referer={referer}",
-                        remediation="Form Post 사용, 콜백에서 서드파티 로드 제거, Referrer-Policy 적용.",
-                        references=["RFC 9700(BCP)", "OIDF Form Post"]
-                    )
-                else:
-                    self._add(
-                        id="AC-DEL-003",
-                        title="Referer에 인가코드 포함",
-                        severity=SEV_MEDIUM,
-                        description="동일 출처라도 운영 로그/분석 경로로 샐 수 있습니다.",
-                        evidence=f"referer={referer}",
-                        remediation="Form Post 사용으로 URL 노출 자체를 제거하세요.",
-                        references=["RFC 9700(BCP)"]
-                    )
-
-        # [5] state 존재/엔트로피 (RFC 6749 §10.12, RFC 9700)
-        state = authz_req.get("state")
-        if not state:
-            self._add(
-                id="AC-STA-001",
-                title="state 미사용",
-                severity=SEV_HIGH,
-                description="state가 없으면 로그인 CSRF/코드 주입에 취약합니다.",
-                remediation="트랜잭션마다 고엔트로피 state를 생성/검증하고 처리 후 파기하세요.",
-                references=["RFC 6749 §10.12", "RFC 9700(BCP)"]
-            )
-        else:
-            ent = _entropy_bits_per_char(state)
-            if len(state) < 16 or ent < 3.0:
-                self._add(
-                    id="AC-STA-002",
-                    title="state가 짧거나 예측 가능",
-                    severity=SEV_MEDIUM,
-                    description=f"state 추측 가능성 존재 (len={len(state)}, entropy≈{ent:.2f} bits/char).",
-                    remediation="암호학적 난수로 충분히 긴 state 사용(~128비트 수준의 예측 불가성).",
-                    references=["RFC 9700(BCP)"]
-                )
-
-        # [6] Mix-Up 방지(iss, RFC 9207)
-        expected_iss = trace.get("as_issuer_expected")
-        seen_iss = authz_res.get("iss")
-        if expected_iss:
-            if not seen_iss:
-                self._add(
-                    id="AC-ISS-001",
-                    title="인가응답에 iss 없음(믹스업 방어 비활성)",
-                    severity=SEV_LOW,
-                    description="다중 AS 환경이면 'iss' 검증으로 발신자 식별이 필요합니다.",
-                    remediation="인가응답에 RFC 9207의 'iss'를 포함/검증하세요.",
-                    references=["RFC 9207"]
-                )
-            elif seen_iss != expected_iss:
-                self._add(
-                    id="AC-ISS-002",
-                    title="인가응답의 iss 불일치",
-                    severity=SEV_HIGH,
-                    description=f"인가응답 발신자(iss)가 기대값과 다릅니다.",
-                    evidence=f"expected={expected_iss}, seen={seen_iss}",
-                    remediation="응답 거부 및 구성된 AS issuer와 일치하는지 검증하세요.",
-                    references=["RFC 9207"]
-                )
-
-        # [7] PKCE 점검 (RFC 7636, BCP)
-        cc = (authz_req.get("code_challenge") or "")
-        ccm = (authz_req.get("code_challenge_method") or "").upper()
-        cv = token_req.get("code_verifier")
-        if cc:
-            if ccm in ("", "PLAIN"):
-                self._add(
-                    id="AC-PKCE-001",
-                    title="PKCE 'plain' 사용(다운그레이드 취약)",
-                    severity=SEV_HIGH,
-                    description="PKCE는 S256 권장입니다. plain은 사용 금지.",
-                    remediation="S256만 허용하도록 정책화하세요.",
-                    references=["RFC 7636 §4.2"]
-                )
-            if not cv:
-                self._add(
-                    id="AC-PKCE-002",
-                    title="/token에 code_verifier 미제출",
-                    severity=SEV_HIGH,
-                    description="인가요청에서 PKCE를 썼다면 토큰 교환 시 code_verifier가 필수입니다.",
-                    remediation="code_verifier 미제출 시 토큰 교환을 거부하도록 하세요.",
-                    references=["RFC 7636"]
-                )
-        else:
-            self._add(
-                id="AC-PKCE-003",
-                title="코드 플로우에서 PKCE 미사용",
-                severity=SEV_MEDIUM,
-                description="PKCE 미사용은 코드 가로채기/주입 리스크를 키웁니다.",
-                remediation="모든 코드 플로우에 PKCE(S256)를 적용하세요.",
-                references=["RFC 9700(BCP)", "RFC 7636"]
-            )
-
-        # [8] /token 바인딩 검증(redirect_uri 동일 제출, RFC 6749 §4.1.3)
-        if ru:
-            tru = token_req.get("redirect_uri")
-            if not tru:
-                self._add(
-                    id="AC-TOK-001",
-                    title="/token에 redirect_uri 누락(바인딩 상실)",
-                    severity=SEV_HIGH,
-                    description="인가요청에 redirect_uri를 보냈다면 /token에도 동일한 값을 보내야 합니다.",
-                    remediation="/token 요청에 동일 redirect_uri를 포함하고 AS에서 일치 검증을 강제하세요.",
-                    references=["RFC 6749 §4.1.3"]
-                )
-            elif tru != ru:
-                self._add(
-                    id="AC-TOK-002",
-                    title="인가요청과 /token의 redirect_uri 불일치",
-                    severity=SEV_HIGH,
-                    description="인가요청에서 사용한 redirect_uri와 /token의 값이 다릅니다.",
-                    evidence=f"authz={ru}, token={tru}",
-                    remediation="두 요청 모두 동일한 redirect_uri를 사용하세요.",
-                    references=["RFC 6749 §4.1.3"]
-                )
-
-        # [9] Request by reference 사용 시(PAR/JAR 권장)
-        req_uri = authz_req.get("request_uri")
-        par_used = bool(authz_req.get("par_used"))
-        if req_uri and not par_used:
-            self._add(
-                id="AC-REQ-001",
-                title="request_uri by reference 이면서 PAR 미사용",
-                severity=SEV_MEDIUM,
-                description="by-reference는 변조/노출면이 큽니다. PAR로 백채널 푸시 권장.",
-                evidence=f"request_uri={req_uri}",
-                remediation="RFC 9126(PAR) 채택, 최소한 JAR 서명/암호화 + request_uri 화이트리스트/단명성.",
-                references=["RFC 9101", "RFC 9126"]
-            )
-
-        # [10] 네이티브 앱 특이사항(RFC 8252)
-        if env.get("is_native_app"):
-            sch = _scheme(ru) if ru else None
-            if sch and sch not in ("http", "https"):  # 커스텀 스킴
-                if not cc:
-                    self._add(
-                        id="AC-NAT-001",
-                        title="네이티브 커스텀 스킴에서 PKCE 미사용",
-                        severity=SEV_HIGH,
-                        description="커스텀 스킴은 가로채기 위험이 커서 PKCE가 필수적입니다.",
-                        remediation="PKCE(S256) 적용. 가능하면 루프백(127.0.0.1/::1) 또는 claimed HTTPS 사용.",
-                        references=["RFC 8252", "RFC 7636"]
-                    )
-
-        # [11] 토큰 송신자 구속(피해 축소) — mTLS/DPoP (정보성)
-        tok = trace.get("token_response") or {}
-        if tok and not tok.get("mtls") and not tok.get("dpop"):
-            self._add(
-                id="AC-MIT-001",
-                title="액세스 토큰 송신자 구속 미적용(정보)",
-                severity=SEV_INFO,
-                description="코드가 유출돼 토큰이 발급되더라도, mTLS/DPoP로 재사용을 줄일 수 있습니다.",
-                remediation="가능한 경우 mTLS(RFC 8705) 또는 DPoP(RFC 9449) 채택.",
-                references=["RFC 8705", "RFC 9449"]
-            )
-
-        return self.findings
-
-    def render_text_report(self, findings: Optional[List[Finding]] = None) -> str:
-        findings = findings if findings is not None else self.findings
-        if not findings:
-            return "[OK] No authorization-code-theft risks detected based on supplied evidence."
-
-        order = {SEV_HIGH:0, SEV_MEDIUM:1, SEV_LOW:2, SEV_INFO:3}
-        lines: List[str] = []
-        for f in sorted(findings, key=lambda x: order.get(x.severity, 99)):
-            lines.append(f"[{f.severity}] {f.id} — {f.title}")
-            if f.description: lines.append(f"  desc: {f.description}")
-            if f.evidence:    lines.append(f"  evidence: {f.evidence}")
-            if f.remediation: lines.append(f"  fix: {f.remediation}")
-            if f.references:  lines.append(f"  refs: {', '.join(f.references)}")
-            lines.append("")
-        return "\n".join(lines)
-
-
-# --------------- EXAMPLE (Data Controller가 여기만 바꾸면 실행됨) ---------------
 if __name__ == "__main__":
-    # >>> Data Controller: 아래 'trace'에 캡처/파싱한 값 넣으세요 (예시) <<<
-    trace = {
-        "as_issuer_expected": "https://as.example",
-        "registered_redirect_uris": ["https://client.tld/cb"],
-
-        "authorization_request": {
-            "client_id": "my-client",
-            "redirect_uri": "https://client.tld/cb",
-            "response_type": "code",
-            "response_mode": "query",
-            "state": "state-123",
-            "code_challenge": "abc",
-            "code_challenge_method": "plain",  # 의도적으로 취약
-            "is_oidc": True,
-            "nonce": "nonce-xyz",
-            "par_used": False
-        },
-
-        "authorization_response": {
-            "delivery": "query",
-            "redirect_to": "https://client.tld/cb?code=XYZ&state=state-123",
-            "code_present": True,
-            "state": "state-123",
-            "iss": "https://as.example",
-            "redirect_chain": [
-                "https://client.tld/cb?code=XYZ&state=state-123",
-                "https://client.tld/redirect?next=https://attacker.tld"
-            ]
-        },
-
-        "callback_page_requests": [
-            {
-                "url": "https://cdn.example/app.js",
-                "headers": {"Referer": "https://client.tld/cb?code=XYZ&state=state-123"}
-            }
-        ],
-
-        "token_request": {
-            "client_id": "my-client",
-            "grant_type": "authorization_code",
-            "code": "XYZ",
-            "redirect_uri": "https://client.tld/cb",
-            "code_verifier": None,  # 의도적으로 취약
-            "client_auth": "client_secret_basic"
-        },
-
-        "token_response": {
-            "token_type": "Bearer",
-            "dpop": False,
-            "mtls": False
-        },
-
-        "environment": {
-            "is_native_app": False,
-            "loopback_used": False
-        }
-    }
-
-    checker = AuthCodeTheftChecker()
-    findings = checker.check(trace)
-    print(checker.render_text_report(findings))
+    import sys, json as _json
+    try:
+        raw = _json.load(sys.stdin)
+    except Exception:
+        sys.stderr.write("Provide flow_bundle JSON via stdin.\n")
+        raise
+    print(pretty_report(run_checks(raw)))

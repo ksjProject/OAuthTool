@@ -10,7 +10,7 @@
       "state": "8QAXwP9I0lyXEjJWB3UeCUlUvydEEMOrKCsfrNRzlvU",
       "nonce": "H3tMI9xLqSDPWpiTkUS6Ya--bYnKCsKukAi5piiA76I"
     },
-    "ts": 1761032940
+    "ts": 1761072592
   },
   "authorization_response": {
     "location": "http://ksj15.ddns.net/django/accounts/oidc/callback/?state=8QAXwP9I0lyXEjJWB3UeCUlUvydEEMOrKCsfrNRzlvU&session_state=d5d17a8d-ccab-4b25-86fa-3c7d0cdb99c1&iss=https%3A%2F%2Fhappy.songsings.site%2Fkc%2Frealms%2Fweb-service&code=44f6f282-4182-46b2-b930-f394f997e381.d5d17a8d-ccab-4b25-86fa-3c7d0cdb99c1.5cb442f6-10c8-4630-b248-0bb859b42688",
@@ -22,6 +22,7 @@
     }
   },
   "callback_request": {},
+  "token_request": {},
   "token_response": {
     "json": {
       "id_token": "eyJhbGciOiJSUzI1NiIsInR5cCIgOiAiSldUIiwia2lkIiA6ICIwVC1nblhlS2JzTEpnWFdwQmo5VFJiYTAwQUxHM2piMXFlWGpUaGJtZl9RIn0.eyJleHAiOjE3NjEwNjE3MTksImlhdCI6MTc2MTA1OTkxOSwiYXV0aF90aW1lIjoxNzYxMDU5OTE4LCJqdGkiOiJmM2E0ZjYxNy00ZWNkLTJmMjAtZTBmYi01OWVkZmIwMjdlNmIiLCJpc3MiOiJodHRwczovL2hhcHB5LnNvbmdzaW5ncy5zaXRlL2tjL3JlYWxtcy93ZWItc2VydmljZSIsImF1ZCI6IjIwMC1kamFuZ28iLCJzdWIiOiI1Nzg0ZDAzYS01M2QzLTQwODItOWQ1YS1mMGEwYjNlYzYxMDQiLCJ0eXAiOiJJRCIsImF6cCI6IjIwMC1kamFuZ28iLCJub25jZSI6IkgzdE1JOXhMcVNEUFdwaVRrVVM2WWEtLWJZbktDc0t1a0FpNXBpaUE3NkkiLCJzaWQiOiJkNWQxN2E4ZC1jY2FiLTRiMjUtODZmYS0zYzdkMGNkYjk5YzEiLCJhdF9oYXNoIjoiUkozRlc3dFZ3Sk9fZDB2RWJDUUhfZyIsImFjciI6IjEiLCJlbWFpbF92ZXJpZmllZCI6ZmFsc2UsIm5hbWUiOiJKZXNzaSBLaW0iLCJwcmVmZXJyZWRfdXNlcm5hbWUiOiJ0ZXN0IiwiZ2l2ZW5fbmFtZSI6Ikplc3NpIiwiZmFtaWx5X25hbWUiOiJLaW0iLCJlbWFpbCI6InRlc3RAZ21haWwuY29tIn0.JreFlpyBZ1CRuL6Oiw1NYp41py0cxmFqGbtRn72MSJgd6UeDSQy4QwAwHo7ho3bgF8isrGh8moAFt38jugzS5Wr9CjXRJfx0N-eDvll1woDaHnEnMcazkhR2gi_25NH8qDhQDsKIViQmOvqKfdauhyBui68bkE_rlEsXqWheam7ahnMy2zNR6j1YZB-cG_4kz8uRhZWeHj9ycjoR_x7S4TqHkjDqhFV55bb0Gp3MEVNfbzoiSWzmqTDmvStk8sTHoh1ssCOK9NbymLmY0JfmGkMfdC6ha01yYJybwx9iQgLuin01hhjlTcFD3ndKYhBVk7G8xbBktjgQufjVjBYVuw",
