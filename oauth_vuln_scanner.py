@@ -18,8 +18,10 @@ OAuth Vuln Scanner (CLI)
     3) Proxy Setup Assistant        ← OS별 시스템 프록시/mitm CA + docker-compose 자동 수정 + 컨테이너 주입 + (수정 시) up -d 자동 + mitm 기본 로깅 주입
                                      (개편) 프록시 호스트/포트가 preset으로 들어오면 해당 값으로 자동 진행
                                      (개편) 127.0.0.1/localhost로 받은 경우 컨테이너/compose에 host.docker.internal 자동 보정
+                                     (신규) 호스트 PC 환경변수(HTTP[S]_PROXY, REQUESTS_CA_BUNDLE, SSL_CERT_FILE) 자동 주입
     4) Proxy Setup Revert           ← 시스템 프록시/mitm CA/컨테이너 주입/compose 수정 원복 + mitm 기본 로깅 원복
                                      (개편) 컨테이너의 /etc/hosts에 추가되었을 수 있는 host.docker.internal 매핑 제거
+                                     (신규) 3번에서 주입한 호스트 PC 환경변수 원복
 
 주의:
 - 3번은 “설정만” 수행합니다(원복 묻지 않음). 원복은 4번에서 따로 실행하세요.
@@ -320,7 +322,7 @@ class ArtifactWriter:
         self._started = now_iso()
 
     def add_packet(self, pkt: Dict[str, Any]) -> None:
-        # 요청/응답을 별도 레코드로 순서 기록 (type: request|response|error)
+        # 요청/응답을 별도 레코드로 순서 기록 (type=request|response|error)
         write_jsonl(self.packets, pkt)
         kind = pkt.get("type")
         if kind == "request":
@@ -592,6 +594,12 @@ MITM_DIR = Path.home() / ".mitmproxy"
 CA_PEM = MITM_DIR / "mitmproxy-ca-cert.pem"
 CA_CER = MITM_DIR / "mitmproxy-ca-cert.cer"
 
+# (신규) 호스트 PC 영구 환경변수 주입/원복용 파일/마커
+HOST_ENV_FILE = Path.home() / ".oauth_vuln_proxy_env.sh"
+RC_FILES = [Path.home()/".bashrc", Path.home()/".zshrc", Path.home()/".profile"]
+START_MARK = "# >>> oauth-vuln-scanner proxy env >>>"
+END_MARK   = "# <<< oauth-vuln-scanner proxy env <<<"
+
 def ensure_pip_package(pkg: str, import_name: Optional[str] = None) -> None:
     name = import_name or pkg.replace("-", "_")
     try:
@@ -819,8 +827,6 @@ def revert_mitm_config_defaults() -> None:
                     print("[mitmproxy] config.yaml 텍스트 기반으로 옵션을 제거했습니다.")
     except Exception:
         pass
-
-
 # ====== 시스템 프록시 관리 ======
 def _win_proxy_notify() -> None:
     try:
@@ -830,8 +836,6 @@ def _win_proxy_notify() -> None:
         ctypes.windll.wininet.InternetSetOptionW(0, INTERNET_OPTION_REFRESH, 0, 0)
     except Exception:
         pass
-
-
 def windows_proxy_disable():
     import winreg
     path = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
@@ -920,7 +924,6 @@ class SystemProxyManager:
             _win_proxy_apply(self.host, self.port)
             print("[proxy] Windows 시스템 프록시를 자동 설정했습니다.")
         elif self.os == "macos":
-            # 비대화형 기본 적용 (인터페이스 기본값 사용)
             iface = self.macos_iface
             cmds = [
                 ["sudo", "networksetup", "-setwebproxy", iface, self.host, str(self.port)],
@@ -929,12 +932,11 @@ class SystemProxyManager:
                 ["sudo", "networksetup", "-setsecurewebproxystate", iface, "on"],
             ]
             ok = True
-            for c in cmds: ok &= (_run(c, show_progress=True, progress_text=f"macOS 프록시 적용: {' '.join(c[:3])}") == 0)
+            for c in cmds: ok &= (_run(c, show_progress=True, progress_text="macOS 시스템 프록시 적용") == 0)
             if ok:
                 self.did_configure_nonwin = True
                 print("[proxy] macOS 시스템 프록시 설정 완료.")
         elif self.os in ("ubuntu", "rhel"):
-            # GNOME 환경이면 설정. 서버 환경이면 실패해도 무시.
             cmds = [
                 ["gsettings", "set", "org.gnome.system.proxy", "mode", "manual"],
                 ["gsettings", "set", "org.gnome.system.proxy.http", "host", self.host],
@@ -943,35 +945,33 @@ class SystemProxyManager:
                 ["gsettings", "set", "org.gnome.system.proxy.https", "port", str(self.port)],
             ]
             ok = True
-            for c in cmds: ok &= (_run(c, show_progress=True, progress_text=f"GNOME 프록시 적용: {' '.join(c[:4])}") == 0)
+            for c in cmds: ok &= (_run(c, show_progress=True, progress_text="GNOME 시스템 프록시 적용") == 0)
             if ok:
                 self.did_configure_nonwin = True
                 print("[proxy] GNOME 시스템 프록시 설정 완료.")
 
     def disable_all(self) -> None:
-        # 4번(원복)에서 사용: 백업 없어도 강제 해제
         if self.os == "windows":
             windows_proxy_disable()
             print("[proxy] Windows 시스템 프록시 비활성화.")
         elif self.os == "macos":
-            _run(["sudo", "networksetup", "-setwebproxystate", self.macos_iface, "off"], show_progress=True, progress_text="macOS 웹 프록시 off")
-            _run(["sudo", "networksetup", "-setsecurewebproxystate", self.macos_iface, "off"], show_progress=True, progress_text="macOS 보안 웹 프록시 off")
+            _run(["sudo", "networksetup", "-setwebproxystate", self.macos_iface, "off"], show_progress=True, progress_text="macOS 웹 프록시 끔")
+            _run(["sudo", "networksetup", "-setsecurewebproxystate", self.macos_iface, "off"], show_progress=True, progress_text="macOS HTTPS 프록시 끔")
             print("[proxy] macOS 시스템 프록시 비활성화.")
         elif self.os in ("ubuntu", "rhel"):
-            _run(["gsettings", "set", "org.gnome.system.proxy", "mode", "none"], show_progress=True, progress_text="GNOME 프록시 off")
+            _run(["gsettings", "set", "org.gnome.system.proxy", "mode", "none"], show_progress=True, progress_text="GNOME 프록시 끔")
             print("[proxy] GNOME 시스템 프록시 비활성화.")
 
     def disable(self) -> None:
-        # 1번 종료 시 복원용(백업 기반)
         if self.os == "windows" and self.backup is not None:
             _win_proxy_restore(self.backup)
             print("[proxy] 이전 프록시 설정을 복원했습니다.")
         elif self.os == "macos" and self.did_configure_nonwin:
-            _run(["sudo", "networksetup", "-setwebproxystate", self.macos_iface, "off"], show_progress=True, progress_text="macOS 웹 프록시 off")
-            _run(["sudo", "networksetup", "-setsecurewebproxystate", self.macos_iface, "off"], show_progress=True, progress_text="macOS 보안 웹 프록시 off")
+            _run(["sudo", "networksetup", "-setwebproxystate", self.macos_iface, "off"], show_progress=True, progress_text="macOS 웹 프록시 끔")
+            _run(["sudo", "networksetup", "-setsecurewebproxystate", self.macos_iface, "off"], show_progress=True, progress_text="macOS HTTPS 프록시 끔")
             print("[proxy] macOS 시스템 프록시를 비활성화했습니다.")
         elif self.os in ("ubuntu", "rhel") and self.did_configure_nonwin:
-            _run(["gsettings", "set", "org.gnome.system.proxy", "mode", "none"], show_progress=True, progress_text="GNOME 프록시 off")
+            _run(["gsettings", "set", "org.gnome.system.proxy", "mode", "none"], show_progress=True, progress_text="GNOME 프록시 끔")
             print("[proxy] GNOME 시스템 프록시를 비활성화했습니다.")
 
 
@@ -994,32 +994,146 @@ def _wait_proxy_ready(host: str, port: int, proc, log_path: Path, timeout: float
     raise SystemExit(2)
 
 
+# ====== (신규) 호스트 PC 환경변수 주입/원복 ======
+HOST_ENV_BACKUP = Path.home() / ".oauth_vuln_proxy_env_backup.json"
+
+def _write_unix_rc_block(proxy_host: str, proxy_port: int, ca_path: str) -> None:
+    block = [
+        START_MARK,
+        f'export HTTP_PROXY="http://{proxy_host}:{proxy_port}"',
+        f'export HTTPS_PROXY="http://{proxy_host}:{proxy_port}"',
+        f'export REQUESTS_CA_BUNDLE="{ca_path}"',
+        'export SSL_CERT_FILE="$REQUESTS_CA_BUNDLE"',
+        END_MARK,
+        "",
+    ]
+    HOST_ENV_FILE.write_text("\n".join(block), encoding="utf-8")
+    # ensure RC files source this file (idempotent)
+    for rc in RC_FILES:
+        try:
+            if not rc.exists():
+                rc.touch()
+            txt = rc.read_text(encoding="utf-8", errors="ignore")
+            if START_MARK in txt and END_MARK in txt:
+                # replace existing block
+                new = re.sub(rf"{re.escape(START_MARK)}.*?{re.escape(END_MARK)}\n?", "\n".join(block), txt, flags=re.S)
+            else:
+                new = txt.rstrip() + "\n\n# OAuth Vuln Scanner proxy env\nsource \"$HOME/.oauth_vuln_proxy_env.sh\"\n"
+            rc.write_text(new, encoding="utf-8")
+        except Exception:
+            pass
+
+
+def _apply_host_env(proxy_host: str, proxy_port: int) -> None:
+    ca_path = str(CA_PEM)
+    os_name = (SELECTED_OS or "").lower()
+    # 백업: 현재 프로세스 환경 기준 값 저장
+    backup = {k: os.environ.get(k) for k in ("HTTP_PROXY", "HTTPS_PROXY", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE")}
+    try:
+        HOST_ENV_BACKUP.write_text(json.dumps(backup, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+    if os_name == "windows":
+        # setx 영구 주입 + 현재 세션 변수도 설정
+        _run(["setx", "HTTP_PROXY",  f"http://{proxy_host}:{proxy_port}"], show_progress=True, progress_text="Windows: HTTP_PROXY 설정")
+        _run(["setx", "HTTPS_PROXY", f"http://{proxy_host}:{proxy_port}"], show_progress=True, progress_text="Windows: HTTPS_PROXY 설정")
+        _run(["setx", "REQUESTS_CA_BUNDLE", str(CA_PEM)], show_progress=True, progress_text="Windows: REQUESTS_CA_BUNDLE 설정")
+        _run(["setx", "SSL_CERT_FILE", str(CA_PEM)], show_progress=True, progress_text="Windows: SSL_CERT_FILE 설정")
+        os.environ.update({
+            "HTTP_PROXY": f"http://{proxy_host}:{proxy_port}",
+            "HTTPS_PROXY": f"http://{proxy_host}:{proxy_port}",
+            "REQUESTS_CA_BUNDLE": str(CA_PEM),
+            "SSL_CERT_FILE": str(CA_PEM),
+        })
+        print("[host-env] Windows 환경변수 주입 완료 (새 콘솔에서 자동 적용).")
+    else:
+        sp = _Spinner("호스트 환경변수 파일/쉘 설정 적용")
+        sp.start()
+        try:
+            _write_unix_rc_block(proxy_host, proxy_port, ca_path)
+        finally:
+            sp.stop()
+        os.environ.update({
+            "HTTP_PROXY": f"http://{proxy_host}:{proxy_port}",
+            "HTTPS_PROXY": f"http://{proxy_host}:{proxy_port}",
+            "REQUESTS_CA_BUNDLE": ca_path,
+            "SSL_CERT_FILE": ca_path,
+        })
+        print(f"[host-env] UNIX 계열 환경변수 주입 완료 (~/{HOST_ENV_FILE.name} + rc파일에 source 추가).")
+
+
+def _revert_host_env() -> None:
+    os_name = (SELECTED_OS or "").lower()
+    old = {}
+    try:
+        if HOST_ENV_BACKUP.exists():
+            old = json.loads(HOST_ENV_BACKUP.read_text(encoding="utf-8"))
+    except Exception:
+        old = {}
+    vars_ = ("HTTP_PROXY", "HTTPS_PROXY", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE")
+
+    if os_name == "windows":
+        for k in vars_:
+            prev = old.get(k)
+            if prev in ("", None):
+                # 삭제
+                _run(["reg", "delete", r"HKCU\Environment", "/v", k, "/f"], show_progress=True, progress_text=f"Windows: {k} 삭제")
+            else:
+                _run(["setx", k, str(prev)], show_progress=True, progress_text=f"Windows: {k} 복원")
+        print("[host-env] Windows 환경변수 원복 완료.")
+    else:
+        # rc 파일에서 블록 제거
+        for rc in RC_FILES:
+            if not rc.exists():
+                continue
+            try:
+                txt = rc.read_text(encoding="utf-8", errors="ignore")
+                new = re.sub(rf"{re.escape(START_MARK)}.*?{re.escape(END_MARK)}\n?", "", txt, flags=re.S)
+                rc.write_text(new, encoding="utf-8")
+            except Exception:
+                pass
+        try:
+            if HOST_ENV_FILE.exists():
+                HOST_ENV_FILE.unlink()
+        except Exception:
+            pass
+        print("[host-env] UNIX 계열 환경변수 원복 완료.")
+
+    try:
+        if HOST_ENV_BACKUP.exists():
+            HOST_ENV_BACKUP.unlink()
+    except Exception:
+        pass
+
+
 # ====== 캡처 실행 (Proxy/Browser) ======
-def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, login_url: Optional[str], suppress_untrust_prompt: bool = False, *, auto_setup_during_capture: bool = False) -> None:
-    """Proxy Capture
-    auto_setup_during_capture=True 이면, mitmdump를 먼저 띄운 뒤 **3번(Preset)**을 캡처 도중 실행하고,
-    그 완료 이후에 브라우저를 띄웁니다.
-    """
-    # 1) 필요한 패키지 선제 설치 (프록시/CA 적용 이전)
+def run_proxy_capture(
+    listen_host: str,
+    listen_port: int,
+    ssl_insecure: bool,
+    login_url: Optional[str],
+    suppress_untrust_prompt: bool = False,
+    auto_setup_during_capture: bool = False,
+) -> None:
+    """Proxy Capture (요청에 따라 캡처 도중 3번 자동 수행)"""
     mitmdump = ensure_mitmdump_available()
     if login_url:
         ensure_pip_package("selenium", "selenium")
 
-    # 2) CA 파일 확보 (신뢰는 auto_setup 여부에 따라 1번/3번 중 한쪽에서 수행)
+    # CA 확보 + 신뢰
     if not (CA_PEM.exists() or CA_CER.exists()):
         ensure_mitm_ca_files(mitmdump)
+    trust_mitm_ca()  # 사용자 동의 후
 
     aw = ArtifactWriter(PROXY_ARTIFACT_DIR, "Proxy Capture")
 
     tmp_flows = Path(tempfile.mkstemp(prefix="flows_", suffix=".mitm")[1])
     tmp_log = Path(tempfile.mkstemp(prefix="mitmdump_", suffix=".log")[1])
 
-    # 3) 시스템 프록시: auto_setup이 아니면 여기서 적용 (auto_setup이면 3번에서 적용)
-    spm: Optional[SystemProxyManager] = None
-    if not auto_setup_during_capture:
-        trust_mitm_ca()  # 사용자 동의 후
-        spm = SystemProxyManager(listen_host, listen_port)
-        spm.enable()
+    # 시스템 프록시 적용
+    spm = SystemProxyManager(listen_host, listen_port)
+    spm.enable()
 
     cmd = [
         mitmdump,
@@ -1027,7 +1141,7 @@ def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, lo
         "--listen-port", str(listen_port),
         "-w", str(tmp_flows),
         "--set", "stream_large_bodies=5m",
-        "--set", "anticomp=true",   # 압축 해제(본문 파싱 용이)
+        "--set", "anticomp=true",
     ]
     if ssl_insecure:
         cmd.append("--ssl-insecure")
@@ -1040,15 +1154,15 @@ def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, lo
         proc = subprocess.Popen(cmd, stdout=lf, stderr=lf)
     _wait_proxy_ready(listen_host, listen_port, proc, tmp_log)
 
-    # === 캡처 도중 Proxy Setup Assistant 자동 수행(같은 PC 시나리오) ===
-    if auto_setup_during_capture:
-        print("\n[자동] Proxy Setup Assistant(3번)을 캡처 도중 실행합니다.")
-        # 3번에서 시스템 프록시/CA/compose/컨테이너 주입/mitm 설정을 수행
-        run_proxy_setup_assistant(preset_host=listen_host, preset_port=listen_port)
-        # 사용자가 원하는 순서: 프록시 자동 설정이 끝난 다음 브라우저를 켠다.
-
     driver = None
     try:
+        # ====== 요청 기능: 캡처 "도중"에 3번 수행, 이후 브라우저 띄우기 ======
+        if auto_setup_during_capture:
+            print("\n[자동] Proxy Setup Assistant(3번)을 먼저 수행합니다 (캡처는 이미 동작 중).")
+            # 이미 trust_mitm_ca()를 수행했으므로 중복 묻지 않도록 skip_trust=True
+            run_proxy_setup_assistant(preset_host=listen_host, preset_port=listen_port, skip_trust=True)
+            print("[자동] 3번 완료. 이제 브라우저를 실행합니다.\n")
+
         if login_url:
             from selenium.webdriver.chrome.options import Options as ChromeOptions  # type: ignore
             from selenium import webdriver  # type: ignore
@@ -1095,8 +1209,8 @@ def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, lo
             except Exception:
                 pass
 
+    # 플로우 처리
     try:
-        # mitmproxy 모듈은 mitmproxy 설치 시 함께 들어옵니다(이미 설치됨).
         from mitmproxy.io import FlowReader
         from http.cookies import SimpleCookie
         if not tmp_flows.exists() or tmp_flows.stat().st_size == 0:
@@ -1111,7 +1225,6 @@ def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, lo
                         req = flow.request
                         resp = getattr(flow, "response", None)
 
-                        # ---- 요청 레코드 ----
                         req_body = getattr(req, "raw_content", None) or getattr(req, "content", b"") or b""
                         req_entry = {
                             "ts": now_iso(),
@@ -1128,14 +1241,12 @@ def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, lo
                             "response": None,
                             "error": None,
                         }
-                        # Authorization 헤더 → oauth_tokens
                         try:
                             auth_tokens = _collect_from_authz_header(req.headers, req.url)
                             if auth_tokens:
                                 aw.add_tokens(oauth_tokens=auth_tokens)
                         except Exception:
                             pass
-                        # 요청 쿠키 → cookies + oauth_tokens
                         try:
                             cookies_hdrs = (
                                 req.headers.get_all("cookie") if hasattr(req.headers, "get_all")
@@ -1153,7 +1264,6 @@ def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, lo
                             pass
                         aw.add_packet(req_entry)
 
-                        # ---- 응답 레코드(있다면) ----
                         resp_body = b""
                         if resp is not None:
                             resp_body = getattr(resp, "content", None) or getattr(resp, "raw_content", b"") or b""
@@ -1171,7 +1281,6 @@ def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, lo
                                 },
                                 "error": None,
                             }
-                            # 응답 set-cookie → cookies + oauth_tokens
                             try:
                                 set_cookie_hdrs = (
                                     resp.headers.get_all("set-cookie") if hasattr(resp.headers, "get_all")
@@ -1188,7 +1297,6 @@ def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, lo
                                 pass
                             aw.add_packet(resp_entry)
 
-                        # OAuth & JWT(요청/응답 모두 고려)
                         _extract_and_store_oauth_from_req_resp(aw, req, resp, req_body, resp_body)
                     except Exception as e:
                         aw.add_packet({
@@ -1203,8 +1311,7 @@ def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, lo
     except Exception as e:
         print(f"[오류] 플로우 파일 처리 중 예외: {e}")
     finally:
-        if spm is not None:
-            spm.disable()
+        spm.disable()
         for p in (tmp_flows, tmp_log):
             try:
                 if p.exists():
@@ -1227,7 +1334,6 @@ def run_proxy_capture(listen_host: str, listen_port: int, ssl_insecure: bool, lo
 def run_browser_session_capture(target: str) -> None:
     """Browser Session Capture"""
     aw = ArtifactWriter(BROWSER_ARTIFACT_DIR, "Browser Session Capture")
-    # 프록시 없이 바로 선제 설치
     ensure_pip_package("selenium", "selenium")
     try:
         from selenium.webdriver.chrome.options import Options as ChromeOptions  # type: ignore
@@ -1266,7 +1372,6 @@ def run_browser_session_capture(target: str) -> None:
                     raise
         input("[Browser Session Capture] 브라우저에서 로그인/동작을 마치고 Enter를 누르세요...")
 
-        # 기본 세션 저장소 수집
         try:
             cookies = driver.get_cookies()
         except Exception:
@@ -1281,7 +1386,6 @@ def run_browser_session_capture(target: str) -> None:
             ss = {}
         aw.add_tokens(cookies=cookies, local_storage=ls, session_storage=ss)
 
-        # 주소창 URL 파라미터 수집
         try:
             cur = driver.current_url
             up = parse_url_params(cur)
@@ -1295,7 +1399,6 @@ def run_browser_session_capture(target: str) -> None:
                 try:
                     req_body = req.body or b""
 
-                    # ---- 요청 ----
                     req_entry = {
                         "ts": now_iso(),
                         "via": "selenium-wire",
@@ -1310,11 +1413,9 @@ def run_browser_session_capture(target: str) -> None:
                         "response": None,
                         "error": None,
                     }
-                    # Authorization 헤더 → oauth_tokens
                     aw.add_tokens(oauth_tokens=_collect_from_authz_header(dict(req.headers), req.url))
                     aw.add_packet(req_entry)
 
-                    # ---- 응답(있으면) ----
                     resp_body = b""
                     resp_obj = None
                     if req.response:
@@ -1338,7 +1439,6 @@ def run_browser_session_capture(target: str) -> None:
                         }
                         aw.add_packet(resp_entry)
 
-                    # OAuth/JWT 추출
                     _extract_and_store_oauth_from_req_resp(
                         aw, req, resp_obj, req_body if isinstance(req_body, (bytes, bytearray)) else str(req_body).encode(), resp_body
                     )
@@ -1360,6 +1460,8 @@ def run_browser_session_capture(target: str) -> None:
             pass
         aw.finalize(wired=wired, mode="external", extra={"target_url": target})
         print(f"[완료] 산출물: {aw.outdir}")
+
+
 # ====== (신규) docker-compose.yml 자동 수정/원복 유틸 ======
 def _compose_find_path() -> Optional[Path]:
     for name in ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"):
@@ -1380,7 +1482,6 @@ def _compose_backup(path: Path) -> Path:
 
 
 def _compose_dump(path: Path, data: Dict[str, Any]) -> None:
-    # pyyaml 설치는 Proxy Setup Assistant 진입 직후 선제 수행하므로, 여기선 사용만
     import yaml  # type: ignore
     with path.open("w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, sort_keys=False)
@@ -1419,7 +1520,6 @@ def _merge_no_proxy(current: str, add: str) -> str:
 
 
 def _no_proxy_to_java_hosts(no_proxy: str) -> str:
-    # Java nonProxyHosts는 '|' 구분, 와일드카드 * 지원
     parts = [p.strip() for p in no_proxy.split(",") if p.strip()]
     if "127.0.0.1" in parts and "127.*" not in parts:
         parts.append("127.*")
@@ -1449,7 +1549,6 @@ def compose_modify_services(compose_path: Path, proxy_host: str, proxy_port: int
             print("[compose] 유효한 서비스가 없어 전체 적용으로 진행합니다.")
             target_names = list(services.keys())
 
-    # 루프백이면 컨테이너가 접근 가능한 이름으로 보정
     is_loopback = proxy_host in ("127.0.0.1", "localhost", "::1")
     container_proxy_host = "host.docker.internal" if is_loopback else proxy_host
     proxy_url = f"http://{container_proxy_host}:{proxy_port}"
@@ -1469,11 +1568,8 @@ def compose_modify_services(compose_path: Path, proxy_host: str, proxy_port: int
         env["HTTP_PROXY"] = proxy_url
         env["HTTPS_PROXY"] = proxy_url
         env["NO_PROXY"] = _merge_no_proxy(env.get("NO_PROXY", ""), no_proxy)
-
-        # Python requests 호환
         env.setdefault("REQUESTS_CA_BUNDLE", "/etc/ssl/certs/ca-certificates.crt")
 
-        # Java(Spring) 추정 적용
         c_name = str(svc.get("container_name", ""))
         if name in java_targets or ("spring" in c_name.lower()):
             nph = _no_proxy_to_java_hosts(env["NO_PROXY"])
@@ -1482,10 +1578,8 @@ def compose_modify_services(compose_path: Path, proxy_host: str, proxy_port: int
             if inject not in jtool:
                 env["JAVA_TOOL_OPTIONS"] = (jtool + " " + inject).strip()
 
-        # 재할당
         svc["environment"] = env
 
-        # 루프백이면 extra_hosts로 host-gateway 매핑 추가
         if is_loopback:
             hosts = list(svc.get("extra_hosts", []) or [])
             if "host.docker.internal:host-gateway" not in hosts:
@@ -1497,7 +1591,7 @@ def compose_modify_services(compose_path: Path, proxy_host: str, proxy_port: int
 
     data["services"] = services
     _compose_dump(compose_path, data)
-    print(f"[compose] docker-compose 수정 완료 → {compose_path}")
+    print(f"[compose] docker-compose 수정 완료 → {compose_path}\n")
     if is_loopback:
         print("[안내] 로컬 프록시를 감지하여 컨테이너에는 host.docker.internal로 연결되도록 설정했습니다.")
     print("")
@@ -1505,14 +1599,9 @@ def compose_modify_services(compose_path: Path, proxy_host: str, proxy_port: int
 
 
 def compose_revert_auto(compose_path: Path) -> Optional[Path]:
-    """
-    docker-compose.*에 대응되는 최신 .bak를 찾아 원복. 성공 시 원본 경로 반환.
-    """
     candidates = [compose_path.with_suffix(compose_path.suffix + ".bak")]
-    # timestamped .*.bak도 탐색
     for p in compose_path.parent.glob(compose_path.name + ".*.bak"):
         candidates.append(p)
-    # 최신 .bak 우선
     candidates = [p for p in candidates if p.exists()]
     if not candidates:
         print("[compose] 원복할 .bak를 찾지 못했습니다.")
@@ -1535,19 +1624,13 @@ def docker_available() -> bool:
 
 
 def _docker_ps_service_map() -> Dict[str, List[str]]:
-    """
-    실행 중 컨테이너의 compose 서비스명 -> 컨테이너ID 목록 맵.
-    """
     out: Dict[str, List[str]] = {}
     if not docker_available():
         return out
-    # 서비스 라벨 기준으로 뽑기
     try:
-        # 모든 컨테이너 ID
         res = subprocess.run(["docker", "ps", "-q"], stdout=subprocess.PIPE, text=True)
         ids = [x for x in res.stdout.strip().splitlines() if x.strip()]
         for cid in ids:
-            # 라벨 조회
             lr = subprocess.run(["docker", "inspect", "-f", "{{ index .Config.Labels \"com.docker.compose.service\"}}", cid],
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             svc = lr.stdout.strip()
@@ -1560,9 +1643,6 @@ def _docker_ps_service_map() -> Dict[str, List[str]]:
 
 
 def docker_configure_container(container: str, proxy_host: str, proxy_port: int, no_proxy: str) -> None:
-    """
-    (개편) 루프백이면 컨테이너 내부에서 host.docker.internal을 게이트웨이로 보정 후 그 이름으로 프록시 설정.
-    """
     is_loopback = proxy_host in ("127.0.0.1", "localhost", "::1")
 
     if is_loopback:
@@ -1603,7 +1683,6 @@ def docker_configure_container(container: str, proxy_host: str, proxy_port: int,
 
 
 def docker_revert_container(container: str) -> None:
-    """컨테이너 내부 프록시 주입/mitm CA 제거 + (개편) hosts 보정 제거."""
     cmd = [
         "docker", "exec", container, "/bin/sh", "-lc",
         'rm -f /etc/profile.d/proxy.sh || true; '
@@ -1625,14 +1704,12 @@ def _tcp_test(host: str, port: int, timeout: float = 2.0) -> bool:
         return False
 
 
-def run_proxy_setup_assistant(preset_host: Optional[str] = None, preset_port: Optional[int] = None) -> None:
+def run_proxy_setup_assistant(preset_host: Optional[str] = None, preset_port: Optional[int] = None, skip_trust: bool = False) -> None:
     """
-    서비스 클라이언트(서버)에서 실행해, 지정한 Proxy Capture(진단 PC)의 IP:PORT로
+    서비스 클라이언트(서버)에서 실행해, 지정한 Proxy Capture(IP:PORT)로
     시스템 프록시/CA 신뢰를 자동 적용하고 docker-compose를 감지하면 .bak 백업 후 자동 수정.
     실행 중 컨테이너에도 자동 주입. compose 수정 시에는 up -d 자동 실행.
-    또한 mitm 기본 로깅 옵션(stream_large_bodies, anticomp)을 설정합니다.
-
-    (개편) preset_host/preset_port가 주어지면 그 값으로 질문 없이 진행.
+    mitm 기본 로깅(stream_large_bodies, anticomp) 및 (신규) 호스트 PC 환경변수 주입도 포함.
     """
     print("\n[Proxy Setup Assistant]")
     print("설명: 진단 PC의 Proxy Capture(IP:PORT)로 이 시스템/도커 서비스를 연결시키는 모드입니다.")
@@ -1652,12 +1729,10 @@ def run_proxy_setup_assistant(preset_host: Optional[str] = None, preset_port: Op
             print("[오류] 올바른 포트를 입력하세요.")
             return
 
-    # (중요) compose 수정에 필요한 pyyaml을 프록시/CA 적용 전에 선제 설치
     compose_path = _compose_find_path()
     if compose_path:
         ensure_pip_package("pyyaml", "yaml")
 
-    # 연결 테스트 (프록시 자체 도달성 확인)
     if _tcp_test(proxy_host, proxy_port):
         print(f"[연결 확인] {proxy_host}:{proxy_port} TCP 연결 성공.")
     else:
@@ -1667,25 +1742,27 @@ def run_proxy_setup_assistant(preset_host: Optional[str] = None, preset_port: Op
     spm = SystemProxyManager(proxy_host, proxy_port)
     spm.enable()
 
-    # mitm CA 다운로드 & 신뢰 (이 시점 이후 pip 설치는 피하는 구성)
-    ca_downloaded = fetch_mitm_ca_via_proxy(proxy_host, proxy_port)
-    if ca_downloaded:
-        trust_mitm_ca()
-    else:
-        print("[경고] 프록시 경유 mitm CA 다운로드 실패. system 신뢰 추가를 생략했습니다.")
+    # mitm CA 다운로드 & 신뢰
+    if not skip_trust:
+        ca_downloaded = fetch_mitm_ca_via_proxy(proxy_host, proxy_port)
+        if ca_downloaded:
+            trust_mitm_ca()
+        else:
+            print("[경고] 프록시 경유 mitm CA 다운로드 실패. system 신뢰 추가를 생략했습니다.")
 
-    # mitm 기본 로깅/본문 캡처 설정 주입
+    # mitm 기본 로깅 적용
     ensure_mitm_config_defaults()
     print("[mitmproxy] 기본 캡처 설정(stream_large_bodies=5m, anticomp=true)을 적용했습니다.")
 
-    # ===== docker-compose.* 자동 수정 + .bak =====
+    # (신규) 호스트 PC 환경변수 자동 주입
+    _apply_host_env(proxy_host, proxy_port)
+
+    # docker-compose 수정 + up -d
     modified_services: List[str] = []
     if compose_path:
         print(f"[compose] 감지: {compose_path.name}")
         compose_bak = _compose_backup(compose_path)
-        # compose 수정
         modified_services = compose_modify_services(compose_path, proxy_host, proxy_port)
-        # 수정이 있었다면 up -d 자동
         if modified_services:
             up_cmd = None
             if shutil.which("docker") and _run(["docker", "compose", "version"]) == 0:
@@ -1697,7 +1774,6 @@ def run_proxy_setup_assistant(preset_host: Optional[str] = None, preset_port: Op
             else:
                 print("[경고] docker compose/ docker-compose 명령을 찾지 못했습니다. 수동으로 배포하세요.")
         else:
-            # 수정 없으면 .bak 원복
             try:
                 if compose_bak.exists():
                     compose_bak.unlink()
@@ -1706,16 +1782,14 @@ def run_proxy_setup_assistant(preset_host: Optional[str] = None, preset_port: Op
     else:
         print("[compose] 현재 경로에서 docker-compose 파일을 찾지 못했습니다. (자동 수정 생략)")
 
-    # ===== 실행 중 컨테이너 주입 (자동) =====
+    # 실행 중 컨테이너 자동 주입
     if docker_available():
-        # 우선 compose 서비스명 기반으로 컨테이너 매칭
-        svc_map = _docker_ps_service_map()  # service -> [containerIDs]
+        svc_map = _docker_ps_service_map()
         targets: List[str] = []
         if modified_services:
             for s in modified_services:
                 targets.extend(svc_map.get(s, []))
         if not targets:
-            # 사용자가 직접 입력하도록 보완
             print("설명: 실행 중 컨테이너에 프록시/CA를 주입합니다. 자동 탐지에 실패하면 이름/ID를 입력하세요(쉼표 가능).")
             manual = input("컨테이너 이름/ID들 (엔터=건너뜀): ").strip()
             if manual:
@@ -1729,29 +1803,33 @@ def run_proxy_setup_assistant(preset_host: Optional[str] = None, preset_port: Op
     else:
         print("[안내] Docker CLI가 감지되지 않아 Docker 설정 단계는 건너뜁니다.")
 
-    print("[완료] Proxy Setup Assistant 작업을 마쳤습니다. 이제 1) Proxy Capture로 캡처를 시작할 수 있습니다.")
+    print("[완료] Proxy Setup Assistant 작업을 마쳤습니다.")
 
 
 # ====== (신규) Proxy Setup Revert (4번) ======
 def run_proxy_setup_revert() -> None:
     """
     시스템 프록시 비활성화, mitm CA 제거, docker-compose 원복(+ up -d),
-    실행 중 컨테이너의 프록시/CA 주입 제거, mitm 기본 로깅 원복을 자동 수행.
+    실행 중 컨테이너의 프록시/CA 주입 제거, mitm 기본 로깅 원복,
+    (신규) 호스트 PC 환경변수 원복을 자동 수행.
     """
     print("\n[Proxy Setup Revert]")
-    print("설명: 3번에서 적용한 프록시/CA/compose/컨테이너 주입/mitm 설정을 원래대로 되돌립니다.")
+    print("설명: 3번에서 적용한 프록시/CA/compose/컨테이너 주입/mitm/호스트 환경변수를 원래대로 되돌립니다.")
 
     # 1) 시스템 프록시 비활성화
     spm = SystemProxyManager("0.0.0.0", 0)
     spm.disable_all()
 
-    # 2) mitm CA 제거
+    # 2) 호스트 환경변수 원복
+    _revert_host_env()
+
+    # 3) mitm CA 제거
     untrust_mitm_ca()
 
-    # 3) mitm 기본 로깅 설정 원복
+    # 4) mitm 기본 로깅 설정 원복
     revert_mitm_config_defaults()
 
-    # 4) compose 원복(+ up -d)
+    # 5) compose 원복(+ up -d)
     compose_path = _compose_find_path()
     if compose_path:
         reverted = compose_revert_auto(compose_path)
@@ -1768,12 +1846,11 @@ def run_proxy_setup_revert() -> None:
     else:
         print("[compose] 현재 경로에서 docker-compose 파일을 찾지 못했습니다. (원복 생략)")
 
-    # 5) 실행 중 컨테이너의 주입 제거 (전체 대상)
+    # 6) 실행 중 컨테이너의 주입 제거 (전체 대상)
     if docker_available():
         svc_map = _docker_ps_service_map()
         all_containers = [cid for ids in svc_map.values() for cid in ids]
         if not all_containers:
-            # compose를 안 쓰거나 라벨 없는 컨테이너도 대비: docker ps 전체 제거 시도 옵션 제공
             res = subprocess.run(["docker", "ps", "-q"], stdout=subprocess.PIPE, text=True)
             all_containers = [x for x in res.stdout.strip().splitlines() if x.strip()]
         if all_containers:
@@ -1821,14 +1898,13 @@ def main() -> None:
         same_pc = ask_yes_no("이 PC에서 서비스 클라이언트(컨테이너/앱)가 구동 중입니까? (같은 PC)", default=True)
 
         if same_pc:
-            listen_host = "127.0.0.1"  # 자동 고정
+            listen_host = "127.0.0.1"
             try:
                 listen_port = int(input("프록시 포트 [기본 8080]: ").strip() or "8080")
             except ValueError:
                 print("잘못된 포트 값입니다. 8080으로 진행합니다.")
                 listen_port = 8080
         else:
-            # 다른 PC에서 트래픽을 모을 땐 기본 호스트를 0.0.0.0으로
             listen_host = input("프록시 호스트 [기본 0.0.0.0]: ").strip() or "0.0.0.0"
             try:
                 listen_port = int(input("프록시 포트 [기본 8080]: ").strip() or "8080")
@@ -1844,7 +1920,6 @@ def main() -> None:
         if open_login:
             login_url = input("로그인 페이지 URL을 입력하세요 (예: example.com/login): ").strip() or None
 
-        # 같은 PC일 땐 **캡처 도중** 3번을 자동 수행하고, 완료 후 브라우저를 띄움
         run_proxy_capture(
             listen_host, listen_port, ssl_insecure, login_url,
             suppress_untrust_prompt=same_pc,
