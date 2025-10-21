@@ -113,7 +113,7 @@ from typing import Dict, Optional, Any, List, Tuple
 from urllib.parse import urlparse, parse_qs, unquote_plus
 
 # 파일 맨 위 import 아래에 추가
-STRICT_CODE_FLOW_NONCE_DEFAULT = False  # 기본 False. 어댑터에서 True로 넘기면 정책 활성화
+STRICT_CODE_FLOW_NONCE_DEFAULT = True   # ✅ 기본값을 엄격 모드로 고정
 
 LABELS = {
     "Pass":     "PASS ✅",
@@ -123,8 +123,15 @@ LABELS = {
 }
 
 def _L(x: str) -> str:
-    # 표준 라벨 문자열을 더 눈에 띄게 변환
     return LABELS.get(x, x)
+
+# ANSI 컬러(원하면 켜기)
+USE_COLOR = True
+def colorize(msg, kind):
+    if not USE_COLOR: return msg
+    C = {"Pass":"\033[32m", "Fail":"\033[31m", "Advisory":"\033[33m", "N/A":"\033[36m"}
+    R = "\033[0m"
+    return f"{C.get(kind,'')}{msg}{R}"
 
 # ----------------------------- Utilities ---------------------------------
 
@@ -270,7 +277,8 @@ def _is_unguessable(nonce: str) -> bool:
     ent = shannon_entropy(nonce)
     return ent >= 3.0
 
-def run_checks(raw: Dict[str, Any]) -> Dict[str, Any]:
+def run_checks(raw: Dict[str, Any],
+               strict_code_nonce: bool = STRICT_CODE_FLOW_NONCE_DEFAULT) -> Dict[str, Any]:
     bundle = FlowBundle.from_dict(raw)
 
     ar = bundle.authorization_request.params or {}
@@ -340,7 +348,18 @@ def run_checks(raw: Dict[str, Any]) -> Dict[str, Any]:
         checklist["A"]["nonce_required_implicit_hybrid"] = {"result": "N/A"}
 
     if flow_type == "code":
-        checklist["A"]["nonce_used_in_codeflow"] = {"result": "Pass" if ar.get("nonce") else "Advisory"}
+        if ar.get("nonce"):
+            checklist["A"]["nonce_used_in_codeflow"] = {"result": "Pass"}
+        else:
+            if strict_code_nonce:
+                # ✅ 팀 정책: Code 플로우에서도 nonce는 필수로 본다
+                fail("N1C",
+                    "Missing nonce in authorization request (Code flow)",
+                    "팀 정책(strict_code_nonce=True): Authorization Code 플로우에서도 nonce가 필수.",
+                    {"response_type": ar.get("response_type"), "scope": ar.get("scope")})
+                checklist["A"]["nonce_used_in_codeflow"] = {"result": "Fail", "note": "policy=strict_code_nonce"}
+            else:
+                checklist["A"]["nonce_used_in_codeflow"] = {"result": "Advisory"}
     else:
         checklist["A"]["nonce_used_in_codeflow"] = {"result": "N/A"}
 
@@ -449,6 +468,10 @@ def pretty_report(res: Dict[str, Any]) -> str:
     def dump_section(name, sec):
         out.append(f"== {name} ==")
         for k, v in sec.items():
+            # 👇 이 한 줄로 'id_token_general_validation' 행을 숨깁니다.
+            if k == "id_token_general_validation":
+                continue
+
             out.append(f"- {k}: {v.get('result')}")
             ov = v.get('observed') or v.get('note')
             if ov:

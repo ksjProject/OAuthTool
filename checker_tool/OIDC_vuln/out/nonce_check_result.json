@@ -7,8 +7,8 @@
     "flow_type": "code",
     "request_scope": "openid profile email offline_access",
     "request_response_type": "code",
-    "request_nonce": null,
-    "request_state": "pAfXJ6B9SnjiuH6vMgodfUHNnBsSHcjpHSJR7IXDWdU"
+    "request_nonce": "H3tMI9xLqSDPWpiTkUS6Ya--bYnKCsKukAi5piiA76I",
+    "request_state": "8QAXwP9I0lyXEjJWB3UeCUlUvydEEMOrKCsfrNRzlvU"
   },
   "checklist": {
     "A": {
@@ -24,15 +24,15 @@
         "result": "N/A"
       },
       "nonce_used_in_codeflow": {
-        "result": "Advisory"
+        "result": "Pass"
       },
       "nonce_entropy_freshness": {
-        "result": "N/A"
+        "result": "Pass"
       }
     },
     "B": {
       "id_token_must_include_nonce_if_requested": {
-        "result": "N/A"
+        "result": "Pass"
       },
       "implicit_hybrid_idtoken_has_nonce": {
         "result": "N/A"
@@ -40,10 +40,10 @@
     },
     "C": {
       "nonce_equality_validation": {
-        "result": "N/A"
+        "result": "Pass"
       },
       "nonce_replay_rejection": {
-        "result": "N/A"
+        "result": "Pass"
       },
       "session_binding_disposal": {
         "result": "Info",
