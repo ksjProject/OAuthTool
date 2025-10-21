@@ -1,0 +1,20 @@
+Flow: code  Overall: PASS
+
+== A. Authorization Request ==
+- flow_identify: Pass
+  • {'scope': 'openid profile email offline_access', 'response_type': 'code'}
+- nonce_required_implicit_hybrid: N/A
+- nonce_used_in_codeflow: Advisory
+- nonce_entropy_freshness: N/A
+
+== B. ID Token ==
+- id_token_must_include_nonce_if_requested: N/A
+- implicit_hybrid_idtoken_has_nonce: N/A
+
+== C. Client Validation ==
+- nonce_equality_validation: N/A
+- nonce_replay_rejection: N/A
+- session_binding_disposal: Info
+  • 세션 결속/사용 후 폐기는 구현 검토 항목(모듈은 관찰 불가)
+- id_token_general_validation: Info
+  • 서명/iss/aud/exp/iat/(at_hash|c_hash)은 별도 모듈에서 검증

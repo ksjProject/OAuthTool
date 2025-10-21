@@ -1,0 +1,58 @@
+{
+  "ok": true,
+  "failures": [],
+  "warnings": [],
+  "flow_type": "code",
+  "observed": {
+    "flow_type": "code",
+    "request_scope": "openid profile email offline_access",
+    "request_response_type": "code",
+    "request_nonce": null,
+    "request_state": "pAfXJ6B9SnjiuH6vMgodfUHNnBsSHcjpHSJR7IXDWdU"
+  },
+  "checklist": {
+    "A": {
+      "flow_identify": {
+        "expect": "scope=openid AND response_type ∈ {code, id_token, code id_token, id_token token, code id_token token}",
+        "observed": {
+          "scope": "openid profile email offline_access",
+          "response_type": "code"
+        },
+        "result": "Pass"
+      },
+      "nonce_required_implicit_hybrid": {
+        "result": "N/A"
+      },
+      "nonce_used_in_codeflow": {
+        "result": "Advisory"
+      },
+      "nonce_entropy_freshness": {
+        "result": "N/A"
+      }
+    },
+    "B": {
+      "id_token_must_include_nonce_if_requested": {
+        "result": "N/A"
+      },
+      "implicit_hybrid_idtoken_has_nonce": {
+        "result": "N/A"
+      }
+    },
+    "C": {
+      "nonce_equality_validation": {
+        "result": "N/A"
+      },
+      "nonce_replay_rejection": {
+        "result": "N/A"
+      },
+      "session_binding_disposal": {
+        "result": "Info",
+        "note": "세션 결속/사용 후 폐기는 구현 검토 항목(모듈은 관찰 불가)"
+      },
+      "id_token_general_validation": {
+        "result": "Info",
+        "note": "서명/iss/aud/exp/iat/(at_hash|c_hash)은 별도 모듈에서 검증"
+      }
+    }
+  }
+}
