@@ -1,0 +1,30 @@
+===== REPORT =====
+
+Flow: unknown  Overall: FAIL
+
+== A. Algorithm & typ ==
+- alg_pinned_allowlist: Fail
+  • [('found', 'HS512'), ('found', 'HS512'), ('found', 'RS256'), ('found', 'RS256')]
+- alg_none_forbidden: Pass
+- access_token_typ_atjwt: Pass
+- hs_usage_and_mixing: Advisory
+
+== B. Key Source & Headers ==
+- header_key_references: Pass
+- jwks_uri_https: Advisory
+  • missing
+
+== C. Policy & Binding ==
+- crit_header_handling: Pass
+- issuer_algorithm_mixing: Advisory
+
+Failures:
+ - [A2] alg not allowed (pinning violation) :: 허용 목록 밖 alg 'HS512'. 허용=['ES256', 'PS256', 'RS256'] :: evidence={'token_kind': 'found', 'alg': 'HS512'}
+ - [A2] alg not allowed (pinning violation) :: 허용 목록 밖 alg 'HS512'. 허용=['ES256', 'PS256', 'RS256'] :: evidence={'token_kind': 'found', 'alg': 'HS512'}
+
+Warnings:
+ - [A5] HS* 알고리즘 사용 관찰 :: 동일 발행자 환경에서 HS ↔ RS/ES/PS 혼용은 구현 혼동 표면. :: evidence={'token_kind': 'found', 'alg': 'HS512'}
+ - [A5] HS* 알고리즘 사용 관찰 :: 동일 발행자 환경에서 HS ↔ RS/ES/PS 혼용은 구현 혼동 표면. :: evidence={'token_kind': 'found', 'alg': 'HS512'}
+ - [A6] 알고리즘 혼용 관찰 :: 관찰 집합: ['HS512', 'RS256'] :: evidence={'by_alg': {'HS512': ['found'], 'RS256': ['found']}}
+ - [B4] jwks_uri missing :: 키 출처 고정을 위해 jwks_uri 제공 권장. :: evidence={}
+ - [C2] 동일 발행자 내 알고리즘 혼용 관찰 :: 운영 정책 상 백엔드·클라이언트 혼동 위험. 단일 핀닝 권장. :: evidence={'by_iss': {'https://happy.songsings.site/kc/realms/web-service': ['RS256', 'HS512']}}
