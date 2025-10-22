@@ -1,27 +1,26 @@
+
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-OAuth Vuln Scanner (CLI)
-- 실행: python oauth_vuln_scanner.py
+OAuth Vuln Scanner (CLI) – ovs.py
+
+- 실행: python ovs.py
 
 - 산출물(최종):
     • proxy_artifacts/...
     • browser_artifacts/...
+    • discovery_artifacts/...   ← (신규) 5번 모드 산출물
 
 - 모드:
     1) Proxy Capture
-       - (개편) 같은 PC에서 서비스 클라이언트를 돌리는지 먼저 확인
-         · 같은 PC라면 호스트=0.0.0.0, 포트=18080으로 자동 고정, 캡처 시작 직후 **캡처 도중** 3번을 자동 수행
-           (프록시 자동 설정이 끝난 뒤 브라우저가 켜지도록 순서 조정)
-         · 다른 PC에서 모을 땐 기본 호스트=0.0.0.0, 포트 기본=18080
+       - (개편) "같은 PC?" 질문 제거. 항상 **외부의 다른 PC**가 이 프록시에 붙는다고 가정.
+         · 기본 바인딩: 0.0.0.0:18080 (수정 가능)
+         · 캡처 도중 Proxy Setup Assistant 자동 수행 없음
     2) Browser Session Capture
-    3) Proxy Setup Assistant        ← OS별 시스템 프록시/mitm CA + docker-compose 자동 수정 + 컨테이너 주입 + (수정 시) up -d 자동 + mitm 기본 로깅 주입
-                                     (개편) 프록시 호스트/포트가 preset으로 들어오면 해당 값으로 자동 진행
-                                     (개편) 127.0.0.1/localhost/0.0.0.0 로 받은 경우 컨테이너/compose에 host.docker.internal 자동 보정
-                                     (신규) 호스트 PC 환경변수(HTTP[S]_PROXY, REQUESTS_CA_BUNDLE, SSL_CERT_FILE) 자동 주입
-    4) Proxy Setup Revert           ← 시스템 프록시/mitm CA/컨테이너 주입/compose 수정 원복 + mitm 기본 로깅 원복
-                                     (개편) 컨테이너의 /etc/hosts에 추가되었을 수 있는 host.docker.internal 매핑 제거
-                                     (신규) 3번에서 주입한 호스트 PC 환경변수 원복
+    3) Proxy Setup Assistant        ← OS별 시스템 프록시/mitm CA + docker-compose 자동 수정 + 컨테이너 주입
+    4) Proxy Setup Revert           ← 3번에서 적용한 설정 일괄 원복
+    5) Discovery Fetch              ← (신규) 과거 산출물(세션 토큰/패킷)에서 Issuer를 추론해
+                                      .well-known openid-configuration 및 JWKS를 가져와 저장
 
 주의:
 - 3번은 “설정만” 수행합니다(원복 묻지 않음). 원복은 4번에서 따로 실행하세요.
@@ -41,8 +40,8 @@ import subprocess
 import os
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlsplit, parse_qsl
+from typing import Any, Dict, List, Optional, Tuple, Iterable
+from urllib.parse import urlsplit, parse_qsl, urlunsplit, quote, urlparse
 
 # ====== 전역 OS 선택 상태 ======
 SELECTED_OS = None  # 'windows' | 'macos' | 'ubuntu' | 'rhel' | 'other'
@@ -69,9 +68,10 @@ OAUTH_KEYS = {
     "nonce",
 }
 
-# === 산출물 디렉토리(간결명) ===
+# === 산출물 디렉토리 ===
 PROXY_ARTIFACT_DIR = Path("./proxy_artifacts").resolve()
 BROWSER_ARTIFACT_DIR = Path("./browser_artifacts").resolve()
+DISCOVERY_ARTIFACT_DIR = Path("./discovery_artifacts").resolve()  # 신규
 
 # ====== 진행률(스피너/바) 유틸 ======
 class _Spinner:
@@ -827,6 +827,7 @@ def revert_mitm_config_defaults() -> None:
                     print("[mitmproxy] config.yaml 텍스트 기반으로 옵션을 제거했습니다.")
     except Exception:
         pass
+
 # ====== 시스템 프록시 관리 ======
 def _win_proxy_notify() -> None:
     try:
@@ -1224,13 +1225,8 @@ def run_proxy_capture(
     tmp_flows = Path(tempfile.mkstemp(prefix="flows_", suffix=".mitm")[1])
     tmp_log = Path(tempfile.mkstemp(prefix="mitmdump_", suffix=".log")[1])
 
-    # 시스템 프록시 적용:
-    # - 같은 PC 시에는 3번(Assistant)에서 적용하므로 여기서는 '지연'
-    # - 외부 PC/수동 시에는 즉시 적용
-    spm: Optional[SystemProxyManager] = None
-    if not auto_setup_during_capture:
-        spm = SystemProxyManager(listen_host, listen_port)
-        spm.enable()
+    # 시스템 프록시 자동 적용 제거(외부 PC가 붙는다고 상정) → 사용자가 3번을 별도로 돌릴 수 있음
+    spm = None
 
     cmd = [
         mitmdump,
@@ -1244,7 +1240,7 @@ def run_proxy_capture(
         cmd.append("--ssl-insecure")
 
     print(f"[proxy] mitmdump 실행: {' '.join(cmd)}")
-    print(f"        이 PC/장치/컨테이너가 {listen_host}:{listen_port} 프록시를 사용하면 트래픽이 캡처됩니다.")
+    print(f"        외부 장치/컨테이너가 {listen_host}:{listen_port} 프록시를 사용하면 트래픽이 캡처됩니다.")
     print("        (브라우저 테스트: http://mitm.it)")
 
     with open(tmp_log, "w", encoding="utf-8") as lf:
@@ -1254,14 +1250,6 @@ def run_proxy_capture(
 
     driver = None
     try:
-        # ====== 요청 기능: 캡처 "도중"에 3번 수행, 이후 브라우저 띄우기 ======
-        if auto_setup_during_capture:
-            print("\n[자동] Proxy Setup Assistant(3번)을 먼저 수행합니다 (캡처는 이미 동작 중).")
-            # 바인딩이 0.0.0.0이면 로컬 클라이언트/환경변수/시스템프록시는 127.0.0.1로 안내
-            preset_host = "127.0.0.1" if listen_host in ("0.0.0.0", "::", "localhost") else listen_host
-            run_proxy_setup_assistant(preset_host=preset_host, preset_port=listen_port, skip_trust=True)
-            print("[자동] 3번 완료. 이제 브라우저를 실행합니다.\n")
-
         if login_url:
             from selenium.webdriver.chrome.options import Options as ChromeOptions  # type: ignore
             from selenium import webdriver  # type: ignore
@@ -1480,7 +1468,7 @@ def run_browser_session_capture(target: str) -> None:
         except Exception:
             ls = {}
         try:
-            ss = driver.execute_script('var o={}; for (var i=0;i<sessionStorage.length;i++){var k=sessionStorage.key(i);o[k]=sessionStorage.getItem(k)}; return o;')
+            ss = driver.execute_script('var o={}; for (var i=0;i<sessionStorage.length;i++){var k=localStorage.key(i);o[k]=sessionStorage.getItem(k)}; return o;')
         except Exception:
             ss = {}
         aw.add_tokens(cookies=cookies, local_storage=ls, session_storage=ss)
@@ -1621,7 +1609,7 @@ def compose_modify_services(compose_path: Path, proxy_host: str, proxy_port: int
     """
     compose 파일을 수정하고, 수정된 서비스명 목록을 반환.
     - HTTP_PROXY/HTTPS_PROXY/NO_PROXY/JAVA_TOOL_OPTIONS/REQUESTS_CA_BUNDLE 주입
-    - (개편) 프록시 호스트가 루프백이면 컨테이너용으로 host.docker.internal 사용 + extra_hosts 주입
+    - 프록시 호스트가 루프백이면 컨테이너용으로 host.docker.internal 사용 + extra_hosts 주입
     """
     data = _compose_load(compose_path)
     services = (data.get("services") or {})
@@ -1795,9 +1783,6 @@ def run_proxy_setup_assistant(preset_host: Optional[str] = None, preset_port: Op
     시스템 프록시/CA 신뢰를 자동 적용하고 docker-compose를 감지하면 .bak 백업 후 자동 수정.
     실행 중 컨테이너에도 자동 주입. compose 수정 시에는 up -d 자동 실행.
     mitm 기본 로깅(stream_large_bodies, anticomp) 및 (신규) 호스트 PC 환경변수 주입도 포함.
-    - 같은 PC에서 바인딩이 0.0.0.0이면:
-      * 로컬 클라이언트/브라우저/환경변수/시스템프록시는 127.0.0.1:{port}
-      * 컨테이너/compose는 host.docker.internal:{port}
     """
     print("\n[Proxy Setup Assistant]")
     print("설명: 진단 PC의 Proxy Capture(IP:PORT)로 이 시스템/도커 서비스를 연결시키는 모드입니다.")
@@ -1820,7 +1805,6 @@ def run_proxy_setup_assistant(preset_host: Optional[str] = None, preset_port: Op
     # 0.0.0.0/localhost/127.0.0.1 는 로컬 취급
     is_local = proxy_host_in in ("127.0.0.1", "localhost", "0.0.0.0", "::1")
     host_for_local_clients = "127.0.0.1" if is_local else proxy_host_in
-    host_for_containers = "host.docker.internal" if is_local else proxy_host_in
 
     compose_path = _compose_find_path()
     if compose_path:
@@ -1847,15 +1831,14 @@ def run_proxy_setup_assistant(preset_host: Optional[str] = None, preset_port: Op
     ensure_mitm_config_defaults()
     print("[mitmproxy] 기본 캡처 설정(stream_large_bodies=5m, anticomp=true)을 적용했습니다.")
 
-    # (신규) 호스트 PC 환경변수 자동 주입 (로컬 클라이언트 기준)
+    # (신규) 호스트 PC 환경변수 자동 주입
     _apply_host_env(host_for_local_clients, proxy_port)
 
-    # docker-compose 수정 + up -d  (컨테이너 기준 호스트 사용)
+    # docker-compose 수정 + up -d
     modified_services: List[str] = []
     if compose_path:
         print(f"[compose] 감지: {compose_path.name}")
         compose_bak = _compose_backup(compose_path)
-        # compose 함수 내부에서 host.docker.internal로 변환되도록 로컬 호스트를 전달
         modified_services = compose_modify_services(compose_path, "127.0.0.1" if is_local else proxy_host_in, proxy_port)
         if modified_services:
             up_cmd = None
@@ -1876,7 +1859,7 @@ def run_proxy_setup_assistant(preset_host: Optional[str] = None, preset_port: Op
     else:
         print("[compose] 현재 경로에서 docker-compose 파일을 찾지 못했습니다. (자동 수정 생략)")
 
-    # 실행 중 컨테이너 자동 주입 (컨테이너 기준 호스트 사용)
+    # 실행 중 컨테이너 자동 주입
     if docker_available():
         svc_map = _docker_ps_service_map()
         targets: List[str] = []
@@ -1890,7 +1873,6 @@ def run_proxy_setup_assistant(preset_host: Optional[str] = None, preset_port: Op
                 targets = [x.strip() for x in manual.split(",") if x.strip()]
         if targets:
             no_proxy_default = "localhost,127.0.0.1,::1,nginx,django,spring"
-            # 컨테이너 함수에 '로컬 호스트'를 넘겨서 host.docker.internal 로 셋업되도록
             for cid in targets:
                 docker_configure_container(cid, "127.0.0.1" if is_local else proxy_host_in, proxy_port, no_proxy_default)
         else:
@@ -1957,6 +1939,321 @@ def run_proxy_setup_revert() -> None:
 
     print("[완료] Proxy Setup Revert 작업을 마쳤습니다.")
 
+# ====== (신규) Discovery Fetch 유틸 ======
+def _fs_sanitize(s: str) -> str:
+    return re.sub(r'[^a-zA-Z0-9._-]+', '-', s.strip('/')) or 'root'
+
+def _host_and_path(issuer: str) -> Tuple[str, str]:
+    u = urlsplit(issuer)
+    return (u.netloc, u.path or '/')
+
+def _most_common(items: Iterable[str]) -> Optional[str]:
+    cnt: Dict[str, int] = {}
+    for x in items:
+        if not x: 
+            continue
+        cnt[x] = cnt.get(x, 0) + 1
+    if not cnt:
+        return None
+    return sorted(cnt.items(), key=lambda kv: (-kv[1], -len(kv[0])))[0][0]
+
+def _infer_issuer_from_authorize_url(auth_url: str) -> Optional[str]:
+    try:
+        u = urlsplit(auth_url)
+        path = u.path or "/"
+        # Keycloak
+        m = re.search(r"(.+?/realms/[^/]+)/protocol/openid-connect/auth(?:$|[/?])", path)
+        if m:
+            return f"{u.scheme}://{u.netloc}{m.group(1)}"
+        # Okta: /oauth2/<authz-server>/v1/authorize or /v1/authorize
+        m = re.search(r"(.+?/oauth2/[^/]+)/v\d(\.\d+)?/authorize(?:$|[/?])", path)
+        if m:
+            return f"{u.scheme}://{u.netloc}{m.group(1)}"
+        # Azure AD v2.0: /{tenant}/oauth2/v2.0/authorize
+        m = re.search(r"^/([^/]+)/oauth2/v2\.0/authorize", path)
+        if m:
+            return f"https://login.microsoftonline.com/{m.group(1)}/v2.0"
+        # Auth0: *.auth0.com/authorize
+        if u.netloc.endswith("auth0.com") and path.endswith("/authorize"):
+            return f"{u.scheme}://{u.netloc}"
+        # Google
+        if u.netloc == "accounts.google.com" and "/o/oauth2/" in path:
+            return "https://accounts.google.com"
+        # Generic: drop trailing /authorize and common suffixes
+        if path.endswith("/authorize"):
+            base = path[:-len("/authorize")]
+            # drop trailing /oauth2 or /oauth
+            base = re.sub(r"/oauth2?$", "", base)
+            base = base or "/"
+            return f"{u.scheme}://{u.netloc}{base}"
+    except Exception:
+        pass
+    return None
+
+def _infer_issuer_from_token_endpoint(token_url: str) -> Optional[str]:
+    try:
+        u = urlsplit(token_url)
+        path = u.path or "/"
+        # Keycloak
+        m = re.search(r"(.+?/realms/[^/]+)/protocol/openid-connect/token(?:$|[/?])", path)
+        if m:
+            return f"{u.scheme}://{u.netloc}{m.group(1)}"
+        # Okta
+        m = re.search(r"(.+?/oauth2/[^/]+)/v\d(\.\d+)?/token(?:$|[/?])", path)
+        if m:
+            return f"{u.scheme}://{u.netloc}{m.group(1)}"
+        # Generic
+        if path.endswith("/token"):
+            base = re.sub(r"/(oauth2?|api|protocol/openid-connect)$", "", path[:-len("/token")])
+            base = base or "/"
+            return f"{u.scheme}://{u.netloc}{base}"
+    except Exception:
+        pass
+    return None
+
+def _find_candidates_from_packets(packets_path: Path, max_lines: int = 50000) -> Dict[str, List[str]]:
+    cands = {"authz": [], "token": [], "disco": []}
+    if not packets_path.exists():
+        return cands
+    try:
+        with packets_path.open("r", encoding="utf-8", errors="ignore") as f:
+            for i, line in enumerate(f):
+                if i > max_lines:
+                    break
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                req = (obj.get("request") or {})
+                url = (req.get("url") if isinstance(req, dict) else None) or None
+                if not url:
+                    continue
+                p = urlsplit(url)
+                path = (p.path or "").lower()
+                if path.endswith("/authorize") or "/protocol/openid-connect/auth" in path:
+                    cands["authz"].append(url)
+                if path.endswith("/token") or "/protocol/openid-connect/token" in path:
+                    cands["token"].append(url)
+                if ".well-known" in path:
+                    cands["disco"].append(url)
+    except Exception:
+        pass
+    return cands
+
+def _read_json(path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+def _pick_issuer_from_artifacts() -> Tuple[Optional[str], Dict[str, Any]]:
+    """
+    세션 토큰/패킷에서 Issuer 후보를 추출하여 가장 그럴듯한 값을 반환.
+    반환: (issuer, debug_info)
+    """
+    dbg: Dict[str, Any] = {"sources": {}}
+
+    # 1) session_token.json from both dirs
+    iss_list: List[str] = []
+    for base in (PROXY_ARTIFACT_DIR, BROWSER_ARTIFACT_DIR):
+        tok = base / "session_token.json"
+        if tok.exists():
+            data = _read_json(tok) or {}
+            dbg["sources"][str(tok)] = list(data.keys())
+            # from jwt_claims
+            for c in data.get("jwt_claims", []):
+                v = (c or {}).get("iss")
+                if v:
+                    iss_list.append(str(v))
+            # oauth_by_type may contain urls in values but not issuer; skip
+    iss_from_claims = _most_common(iss_list)
+
+    # 2) packets.jsonl heuristics
+    authz_urls: List[str] = []
+    token_urls: List[str] = []
+    disco_urls: List[str] = []
+    for base in (PROXY_ARTIFACT_DIR, BROWSER_ARTIFACT_DIR):
+        pk = base / "packets.jsonl"
+        c = _find_candidates_from_packets(pk)
+        authz_urls.extend(c["authz"])
+        token_urls.extend(c["token"])
+        disco_urls.extend(c["disco"])
+
+    issuers_from_authz = [_infer_issuer_from_authorize_url(u) for u in authz_urls]
+    issuers_from_token = [_infer_issuer_from_token_endpoint(u) for u in token_urls]
+
+    cand_iss = _most_common([x for x in ([iss_from_claims] + issuers_from_authz + issuers_from_token) if x])
+
+    dbg.update({
+        "iss_from_claims": iss_from_claims,
+        "authz_samples": authz_urls[:5],
+        "token_samples": token_urls[:5],
+        "disco_samples": disco_urls[:5],
+        "iss_from_authz_top": _most_common([x for x in issuers_from_authz if x]),
+        "iss_from_token_top": _most_common([x for x in issuers_from_token if x]),
+        "chosen_issuer": cand_iss,
+    })
+    return cand_iss, dbg
+
+def _discovery_candidate_urls(issuer: str) -> List[str]:
+    u = urlsplit(issuer)
+    hostroot = f"{u.scheme}://{u.netloc}"
+    path = u.path.rstrip("/")
+    urls: List[str] = []
+    # RFC8414 / OIDC
+    urls.append(f"{issuer.rstrip('/')}/.well-known/openid-configuration")
+    if path:
+        urls.append(f"{hostroot}/.well-known/openid-configuration{path}")
+    urls.append(f"{issuer.rstrip('/')}/.well-known/oauth-authorization-server")
+    if path:
+        urls.append(f"{hostroot}/.well-known/oauth-authorization-server{path}")
+        urls.append(f"{hostroot}/.well-known/oauth-authorization-server?issuer={quote(issuer, safe='')}")
+    # http fallback for each (if https)
+    out: List[str] = []
+    for url in urls:
+        out.append(url)
+        if url.startswith("https://"):
+            out.append("http://" + url[8:])
+    # uniq, keep order
+    seen = set(); ordered = []
+    for x in out:
+        if x not in seen:
+            seen.add(x); ordered.append(x)
+    return ordered
+
+def _http_get_json_try(urls: List[str], timeout: float = 10.0) -> Tuple[Optional[Dict[str, Any]], Optional[str], List[Dict[str, Any]]]:
+    ensure_pip_package("requests", "requests")
+    import requests  # type: ignore
+
+    attempts: List[Dict[str, Any]] = []
+    for u in urls:
+        try:
+            resp = requests.get(u, timeout=timeout, allow_redirects=True)
+            attempts.append({"url": u, "status": resp.status_code, "ct": resp.headers.get("content-type")})
+            if resp.status_code == 200:
+                try:
+                    return resp.json(), u, attempts
+                except Exception:
+                    # 일부 IdP는 text/plain JSON 반환
+                    return json.loads(resp.text), u, attempts
+        except Exception as e:
+            attempts.append({"url": u, "error": str(e)})
+            continue
+    return None, None, attempts
+
+def _write_json(path: Path, obj: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+
+def _mk_discovery_outdir(issuer: str) -> Path:
+    host, path = _host_and_path(issuer)
+    ts = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+    name = f"{ts}_{_fs_sanitize(host)}{('-' + _fs_sanitize(path)) if path and path != '/' else ''}"
+    out = DISCOVERY_ARTIFACT_DIR / name
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+def _discovery_readme_text() -> str:
+    lines = [
+        "이 폴더는 'Discovery Fetch' 모드의 산출물입니다.",
+        "",
+        "[파일 설명]",
+        "- openid_configuration.json: 인가서버의 OIDC/OAuth 2.0 디스커버리 원문. 주요 필드:",
+        "    • issuer, authorization_endpoint, token_endpoint, userinfo_endpoint, jwks_uri",
+        "    • response_types_supported, grant_types_supported, scopes_supported",
+        "    • id_token_signing_alg_values_supported 등 지원 알고리즘/기능",
+        "- jwks.json: 공개키 세트(JWKS) 원문. 주요 필드:",
+        "    • keys[] 배열(각 key의 kty, kid, alg, use, n/e 또는 x/y 등 키 자료)",
+        "- summary.json: 요약/검증 결과. 주요 필드:",
+        "    • issuer_inferred(유추 Issuer), discovery_url_used, jwks_url",
+        "    • warnings(검증 경고 목록)",
+        "    • discovery_core(주요 엔드포인트/지원 목록 발췌)",
+        "    • attempts, jwks_attempts(요청 시도 URL/상태/콘텐츠타입)",
+        "    • created_at(생성 시각)",
+        "",
+        "참고: 일부 제공자는 RFC 8414 포맷을 사용하거나, HTTPS가 막힐 경우 HTTP로 재시도될 수 있습니다.",
+    ]
+    return "\\n".join(lines)
+
+
+def run_discovery_fetch_from_artifacts() -> None:
+    print("\n[Discovery Fetch] 과거 산출물(session_token.json / packets.jsonl)에서 Issuer를 추론해 디스커버리 문서를 가져옵니다.")
+    issuer, dbg = _pick_issuer_from_artifacts()
+    if not issuer:
+        print("[경고] 산출물에서 Issuer를 유추하지 못했습니다.")
+        manual = input("Issuer(URL) 또는 로그인 URL을 입력해 주세요(엔터=중단): ").strip()
+        if not manual:
+            print("[중단] Issuer 미제공.")
+            return
+        # 로그인 URL이면 authorize 요청일 수 있으니 시도
+        iss = _infer_issuer_from_authorize_url(manual) or manual
+        issuer = iss
+
+    print(f"[정보] 선택된 Issuer: {issuer}")
+    cand_urls = _discovery_candidate_urls(issuer)
+    print("[시도] 디스커버리 URL 후보:")
+    for u in cand_urls[:6]:
+        print("  -", u)
+    if len(cand_urls) > 6:
+        print(f"  ... (총 {len(cand_urls)}개)")
+
+    disco, used_url, attempts = _http_get_json_try(cand_urls, timeout=12.0)
+    out_extra: Dict[str, Any] = {"issuer_inferred": issuer, "attempts": attempts}
+    if disco is None:
+        print("[오류] 디스커버리 문서를 가져오지 못했습니다.")
+        _write_json(DISCOVERY_ARTIFACT_DIR / "last_discovery_attempt.json", out_extra)
+        return
+
+    # 검증
+    warnings: List[str] = []
+    if disco.get("issuer") and disco.get("issuer") != issuer:
+        warnings.append(f"디스커버리의 issuer 값이 유추치와 상이: {disco.get('issuer')} != {issuer}")
+    missing_keys = [k for k in ("authorization_endpoint","token_endpoint","jwks_uri","response_types_supported","id_token_signing_alg_values_supported") if k not in disco]
+    if missing_keys:
+        warnings.append(f"디스커버리 필수 키 누락: {', '.join(missing_keys)}")
+
+    # JWKS
+    jwks = None; jwks_url = disco.get("jwks_uri")
+    jwks_attempts: List[Dict[str, Any]] = []
+    if jwks_url:
+        jwks, jwks_used, jwks_attempts = _http_get_json_try([jwks_url], timeout=10.0)
+        if not jwks or not isinstance(jwks.get("keys", []), list) or len(jwks["keys"]) == 0:
+            warnings.append("JWKS keys가 비어있거나 형식이 올바르지 않습니다.")
+
+    # 산출물 저장
+    outdir = _mk_discovery_outdir(issuer)
+    _write_json(outdir / "openid_configuration.json", disco)
+    if jwks:
+        _write_json(outdir / "jwks.json", jwks)
+    summary = {
+        "issuer_inferred": issuer,
+        "discovery_url_used": used_url,
+        "jwks_url": jwks_url,
+        "warnings": warnings,
+        "discovery_core": {
+            "authorization_endpoint": disco.get("authorization_endpoint"),
+            "token_endpoint": disco.get("token_endpoint"),
+            "userinfo_endpoint": disco.get("userinfo_endpoint"),
+            "revocation_endpoint": disco.get("revocation_endpoint"),
+            "introspection_endpoint": disco.get("introspection_endpoint"),
+            "end_session_endpoint": disco.get("end_session_endpoint"),
+            "grant_types_supported": disco.get("grant_types_supported"),
+            "response_types_supported": disco.get("response_types_supported"),
+            "id_token_signing_alg_values_supported": disco.get("id_token_signing_alg_values_supported"),
+        },
+        "attempts": attempts,
+        "jwks_attempts": jwks_attempts,
+        "created_at": now_iso(),
+    }
+    _write_json(outdir / "summary.json", summary)
+    with (outdir / "readme.txt").open("w", encoding="utf-8") as f:
+        f.write(_discovery_readme_text())
+print(f"[완료] discovery_artifacts 생성: {outdir}")
+    print("  - openid_configuration.json")
+    if jwks: print("  - jwks.json")
+    print("  - summary.json")
+
 # ====== OS 선택 & 메인 ======
 def choose_os() -> str:
     detected = platform.system().lower()
@@ -1976,31 +2273,23 @@ def main() -> None:
     global SELECTED_OS
     SELECTED_OS = choose_os()
     print("\n=== OAuth Vuln Scanner ===")
-    print("산출물 폴더: Proxy=./proxy_artifacts, Browser=./browser_artifacts")
-    print("모드 선택: 1) Proxy Capture  2) Browser Session Capture  3) Proxy Setup Assistant  4) Proxy Setup Revert  q) 종료")
+    print("산출물 폴더: Proxy=./proxy_artifacts, Browser=./browser_artifacts, Discovery=./discovery_artifacts")
+    print("모드 선택: 1) Proxy Capture  2) Browser Session Capture  3) Proxy Setup Assistant  4) Proxy Setup Revert  5) Discovery Fetch  q) 종료")
 
-    choice = input("선택 입력 [1/2/3/4/q]: ").strip().lower()
+    choice = input("선택 입력 [1/2/3/4/5/q]: ").strip().lower()
     if choice in ("q", "quit"):
         print("종료합니다.")
         return
 
     if choice == "1":
-        print("\n[Proxy Capture] 이 PC에서 mitmproxy를 실행해, 이 프록시를 경유하는 요청/응답 트래픽을 캡처합니다.")
-
-        same_pc = ask_yes_no("이 PC에서 서비스 클라이언트(컨테이너/앱)가 구동 중입니까? (같은 PC)", default=True)
-
-        if same_pc:
-            # 요구사항: 같은 PC면 0.0.0.0:18080으로 열고, 캡처 도중 3번 자동수행
-            listen_host = "0.0.0.0"
+        print("\n[Proxy Capture] 이 PC에서 mitmproxy를 실행해, 이 프록시에 연결되는 요청/응답 트래픽을 캡처합니다.")
+        # (개편) 항상 외부에서 붙는다고 가정 → 기본 0.0.0.0:18080
+        listen_host = input("프록시 바인딩 호스트 [기본 0.0.0.0]: ").strip() or "0.0.0.0"
+        try:
+            listen_port = int(input("프록시 포트 [기본 18080]: ").strip() or "18080")
+        except ValueError:
+            print("잘못된 포트 값입니다. 18080으로 진행합니다.")
             listen_port = 18080
-            print(f"[자동] 같은 PC로 판단 → 프록시를 {listen_host}:{listen_port} 로 바인딩합니다.")
-        else:
-            listen_host = input("프록시 호스트 [기본 0.0.0.0]: ").strip() or "0.0.0.0"
-            try:
-                listen_port = int(input("프록시 포트 [기본 18080]: ").strip() or "18080")
-            except ValueError:
-                print("잘못된 포트 값입니다. 18080으로 진행합니다.")
-                listen_port = 18080
 
         ssl_insecure = ask_yes_no("서버 인증서 검증을 생략하시겠습니까?", default=False)
 
@@ -2012,8 +2301,8 @@ def main() -> None:
 
         run_proxy_capture(
             listen_host, listen_port, ssl_insecure, login_url,
-            suppress_untrust_prompt=same_pc,
-            auto_setup_during_capture=same_pc
+            suppress_untrust_prompt=False,
+            auto_setup_during_capture=False
         )
         return
 
@@ -2027,12 +2316,15 @@ def main() -> None:
         return
 
     if choice == "3":
-        # 수동 실행 시에도 로컬이면 127.0.0.1 사용을 권장
         run_proxy_setup_assistant()
         return
 
     if choice == "4":
         run_proxy_setup_revert()
+        return
+
+    if choice == "5":
+        run_discovery_fetch_from_artifacts()
         return
 
     print("알 수 없는 선택입니다. 다시 실행하세요.")
