@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # run_checker.py — KSJ15_vuln unified runner/adapter
 # Default OUTDIR: <module_dir>\out  (so results sit next to the vuln module)
@@ -7,6 +6,15 @@
 #  - --outdir "@module"  -> resolves to <module_dir>\out
 #  - --outdir ".\out"    -> respects current working dir
 #  - Auto-creates outdir before writing any files
+#
+# New (discovery attach):
+#  * If input JSON does not have "discovery", this runner will look for
+#    files next to the input JSON and auto-attach what it finds:
+#       - openid_configuration.json
+#       - summary.json
+#       - jwks.json (kept as discovery.jwks for reference)
+#
+#  * This allows the vuln module to cross-check 'iss' and server capabilities.
 
 import argparse, importlib.util, json, os, sys, urllib.parse
 from datetime import datetime, timezone
@@ -36,6 +44,35 @@ def _guess_auth_entries(tokens):
 def _guess_callback_entries(tokens):
     hints = ["/callback", "/cb", "/signin-oidc", "/login/callback"]
     return [t for t in tokens if any(h in (t.get("url","")) for h in hints)]
+
+def _try_load_json(path: str):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+def _attach_discovery_if_missing(flow_bundle: dict, input_json_path: str):
+    if flow_bundle.get("discovery"):
+        return flow_bundle
+    base = os.path.dirname(os.path.abspath(input_json_path))
+    cand = [
+        os.path.join(base, "openid_configuration.json"),
+        os.path.join(base, "summary.json"),
+    ]
+    disc = None
+    for p in cand:
+        j = _try_load_json(p)
+        if j:
+            disc = j
+            break
+    if disc:
+        flow_bundle["discovery"] = disc
+        # JWKS kept for reference
+        jwks = _try_load_json(os.path.join(base, "jwks.json"))
+        if jwks:
+            flow_bundle["discovery"]["_jwks_cached"] = jwks
+    return flow_bundle
 
 def _normalize_from_session(session_json: dict) -> dict:
     oauth_tokens = session_json.get("oauth_tokens", [])
@@ -76,6 +113,8 @@ def _normalize_from_session(session_json: dict) -> dict:
         "refresh_token_response": session_json.get("refresh_token_response") or {"json": {}},
         "previous_nonces": session_json.get("previous_nonces") or []
     }
+    # Attach discovery if missing, using the sidecar files next to the input JSON
+    flow_bundle = _attach_discovery_if_missing(flow_bundle, session_json.get("_input_json_path", ""))
     return flow_bundle
 
 def _maybe_to_markdown(mod, result: dict, pretty_text: str) -> str:
@@ -110,6 +149,8 @@ def main():
 
     with open(args.input_json, "r", encoding="utf-8") as f:
         data = json.load(f)
+    # Stash input path so the normalizer can locate sibling discovery files
+    data["_input_json_path"] = os.path.abspath(args.input_json)
 
     is_session = ("authorization_request" not in data) and ("oauth_tokens" in data or "token_request" in data or "discovery" in data)
     if is_session:
@@ -120,6 +161,8 @@ def main():
         print("[+] saved:", norm_path)
     else:
         flow_bundle = data
+        # Attach discovery if sidecar files present
+        flow_bundle = _attach_discovery_if_missing(flow_bundle, args.input_json)
 
     result = mod.run_checks(flow_bundle)
     pretty = mod.pretty_report(result)

@@ -26,13 +26,26 @@
       }
     }
   ],
-  "warnings": [],
+  "warnings": [
+    {
+      "code": "C4H",
+      "title": "Provider supports 'plain' PKCE",
+      "detail": "서버가 plain을 지원 — 다운그레이드 위험, S256만 허용하도록 구성 권장.",
+      "evidence": {
+        "discovery": [
+          "plain",
+          "S256"
+        ]
+      }
+    }
+  ],
   "flow_type": "code",
   "observed": {
     "flow_type": "code",
     "redirect_uri": "http://ksj15.ddns.net/django/accounts/oidc/callback/",
     "response_mode": null,
     "iss_in_response": true,
+    "issuer_from_discovery": "https://happy.songsings.site/kc/realms/web-service",
     "pkce": {
       "present": false,
       "method": null
@@ -85,11 +98,11 @@
       },
       "jar_par_usage": {
         "result": "Advisory",
-        "note": "JAR/PAR 미사용(권장)"
+        "note": "서버가 PAR 제공 — 사용 권장"
       },
       "sender_constrained_tokens": {
         "result": "Info",
-        "note": "token_type=Bearer; DPoP_hint=False; mTLS=False"
+        "note": "token_type=Bearer; DPoP_hint=False; mTLS_inferred=True"
       }
     }
   }
