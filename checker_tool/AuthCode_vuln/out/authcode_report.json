@@ -70,6 +70,10 @@
       "iss_in_authorization_response": {
         "result": "Pass"
       },
+      "iss_matches_discovery": {
+        "result": "Pass",
+        "note": "iss == discovery.issuer (https://happy.songsings.site/kc/realms/web-service)"
+      },
       "state_presence": {
         "result": "Pass",
         "note": "고엔트로피/예측 불가"
@@ -99,10 +103,6 @@
       "jar_par_usage": {
         "result": "Advisory",
         "note": "서버가 PAR 제공 — 사용 권장"
-      },
-      "sender_constrained_tokens": {
-        "result": "Info",
-        "note": "token_type=Bearer; DPoP_hint=False; mTLS_inferred=True"
       }
     }
   }

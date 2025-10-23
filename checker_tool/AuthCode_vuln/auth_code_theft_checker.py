@@ -1,3 +1,4 @@
+
 """
 auth_code_theft_checker.py — Authorization Code Theft Vulnerability module
 ===========================================================================
@@ -10,11 +11,13 @@ Normative anchors (mapping refs; enforcement is out-of-band):
 - RFC 6749 §3.1.2, §4.1.2, §4.1.3, §10 (redirect_uri, code, state)
 - RFC 7636 (PKCE) — S256 only
 - RFC 8252 (native apps loopback/claimed-https)
-- RFC 8705 (mTLS), RFC 9449 (DPoP) — hardening/mitigation
 - RFC 9207 (iss in authorization response) — Mix-Up mitigation
 - OIDC Core: "redirect_uri Simple String Comparison", Form Post Response Mode
 - OAuth 2.0 Form Post Response Mode (OIDF)
 - BCP 9700 (best practices) — general hardening guidance
+
+Note: Per user request, the informational check "sender_constrained_tokens (mTLS/DPoP)"
+has been REMOVED from Section C.
 """
 
 from __future__ import annotations
@@ -25,8 +28,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse, parse_qs
 
 MODULE_KEY = "authcode"
-
-LABELS = {"Pass":"Pass","Fail":"Fail","Advisory":"Advisory","N/A":"N/A","Info":"Info"}
 
 def _parse_query(url: str) -> Dict[str, str]:
     if not url:
@@ -54,22 +55,18 @@ def _looks_high_entropy(s: str) -> bool:
     unique = len(set(s))
     return (len(s) >= 16) and (unique >= 8)
 
-def _discovery_extract(disc: Dict[str, Any]) -> Tuple[Optional[str], Optional[bool], Dict[str, Any]]:
+def _discovery_extract(disc: Dict[str, Any]) -> Tuple[Optional[str], Optional[bool]]:
     """
-    Accepts either a raw OIDC discovery doc, or the team's 'summary.json' shape.
-    Returns (issuer, iss_param_supported, flatten) for convenience.
+    Accept raw OIDC discovery doc or the team's 'summary.json' shape.
+    Returns (issuer, iss_param_supported).
     """
     if not isinstance(disc, dict):
-        return None, None, {}
-    # Raw OIDC (RFC 8414 / OIDC)
-    issuer = disc.get("issuer")
+        return None, None
+    issuer = disc.get("issuer") or (disc.get("discovery_core") or {}).get("issuer") or disc.get("issuer_inferred")
     iss_supported = disc.get("authorization_response_iss_parameter_supported")
-    # Our 'summary.json' shape
-    if not issuer:
-        issuer = (disc.get("discovery_core") or {}).get("issuer") or disc.get("issuer_inferred")
     if iss_supported is None:
         iss_supported = (disc.get("discovery_core") or {}).get("authorization_response_iss_parameter_supported")
-    return issuer, iss_supported, disc
+    return issuer, iss_supported
 
 @dataclass
 class AuthorizationRequest:
@@ -152,8 +149,8 @@ def run_checks(raw: Dict[str, Any]) -> Dict[str, Any]:
     tr = (bundle.token_request.body or {}) if bundle.token_request else None
     flow_type = _detect_flow_type(ar)
 
-    # Discovery context (new)
-    issuer_cfg, iss_supported, disc_flat = _discovery_extract(bundle.discovery or {})
+    # Discovery context
+    issuer_cfg, iss_supported = _discovery_extract(bundle.discovery or {})
 
     failures: List[Dict[str,Any]] = []
     warnings: List[Dict[str,Any]] = []
@@ -202,16 +199,11 @@ def run_checks(raw: Dict[str, Any]) -> Dict[str, Any]:
         else:
             checklist["A"]["form_post_used"] = {"result":"Advisory", "note":"response_mode가 form_post 아님"}
 
-    # A3 Mix-Up mitigation: iss in authorization response (with discovery cross-check)
+    # A3 Mix-Up mitigation: iss in authorization response + discovery match
     iss = ap.get("iss")
     if iss:
-        if issuer_cfg and iss != issuer_cfg:
-            checklist["A"]["iss_in_authorization_response"] = {"result":"Fail", "note":f"iss({iss}) ≠ discovery.issuer({issuer_cfg})"}
-            fail("C3", "iss value mismatch", "인가 응답의 iss가 디스커버리 issuer와 불일치.", {"iss": iss, "discovery_issuer": issuer_cfg})
-        else:
-            checklist["A"]["iss_in_authorization_response"] = {"result":"Pass"}
+        checklist["A"]["iss_in_authorization_response"] = {"result":"Pass"}
     else:
-        # If provider advertises support for the 'iss' authorization response parameter, absence is a FAIL.
         if iss_supported is True:
             checklist["A"]["iss_in_authorization_response"] = {"result":"Fail", "note":"discovery가 iss 지원을 광고함"}
             fail("C3", "Missing iss in authorization response (RFC 9207)",
@@ -219,7 +211,19 @@ def run_checks(raw: Dict[str, Any]) -> Dict[str, Any]:
         else:
             checklist["A"]["iss_in_authorization_response"] = {"result":"Advisory", "note":"discovery에서 iss 지원 미광고 — 다중 AS 환경에선 권장"}
 
-    # A4 state presence & apparent entropy (for injection/correlation)
+    if issuer_cfg:
+        if not iss:
+            checklist["A"]["iss_matches_discovery"] = {"result":"Fail", "note":"iss 부재 — discovery.issuer와 대조 불가", "observed":{"discovery_issuer": issuer_cfg}}
+        elif iss == issuer_cfg:
+            checklist["A"]["iss_matches_discovery"] = {"result":"Pass", "note":f"iss == discovery.issuer ({issuer_cfg})"}
+        else:
+            checklist["A"]["iss_matches_discovery"] = {"result":"Fail", "note":f"iss({iss}) ≠ discovery.issuer({issuer_cfg})"}
+            fail("C3D", "iss mismatch with discovery.issuer",
+                 "응답 발신자 식별값이 discovery와 달라 Mix-Up 위험.", {"iss": iss, "discovery_issuer": issuer_cfg})
+    else:
+        checklist["A"]["iss_matches_discovery"] = {"result":"N/A", "note":"discovery.issuer 미제공"}
+
+    # A4 state presence & apparent entropy
     st = ar.get("state")
     if st:
         checklist["A"]["state_presence"] = {"result":"Pass", "note":("고엔트로피/예측 불가" if _looks_high_entropy(st) else "엔트로피 불충분 의심")}
@@ -228,12 +232,9 @@ def run_checks(raw: Dict[str, Any]) -> Dict[str, Any]:
         fail("C6A", "Missing state", "상관관계 강화를 위해 고엔트로피 state 사용.", None)
 
     # ---------------- B. PKCE & /token Binding --------------------
-    # Discovery hint: warn if server still supports 'plain'
-    pkce_supported_methods = []
-    if isinstance(bundle.discovery, dict):
-        pkce_supported_methods = (bundle.discovery.get("code_challenge_methods_supported")
-                                  or (bundle.discovery.get("discovery_core") or {}).get("code_challenge_methods_supported")
-                                  or [])
+    pkce_supported_methods = (bundle.discovery.get("code_challenge_methods_supported")
+                              or (bundle.discovery.get("discovery_core") or {}).get("code_challenge_methods_supported")
+                              or []) if isinstance(bundle.discovery, dict) else []
     if "plain" in [m.lower() for m in pkce_supported_methods]:
         warn("C4H", "Provider supports 'plain' PKCE", "서버가 plain을 지원 — 다운그레이드 위험, S256만 허용하도록 구성 권장.", {"discovery": pkce_supported_methods})
 
@@ -248,7 +249,6 @@ def run_checks(raw: Dict[str, Any]) -> Dict[str, Any]:
         checklist["B"]["pkce_s256_in_request"] = {"result":"Fail", "note":"code_challenge 누락 또는 method≠S256"}
         fail("C4", "PKCE missing", "코드 플로우에 PKCE(S256) 필수.", {"response_type": ar.get("response_type")})
 
-    # /token must include code_verifier when PKCE used
     if cc:
         if not tr:
             checklist["B"]["token_has_code_verifier"] = {"result":"N/A", "note":"token_request body 관찰 불가"}
@@ -260,7 +260,6 @@ def run_checks(raw: Dict[str, Any]) -> Dict[str, Any]:
     else:
         checklist["B"]["token_has_code_verifier"] = {"result":"N/A"}
 
-    # /token must re-submit the SAME redirect_uri if it was present
     if redirect_uri:
         if not tr:
             checklist["B"]["token_resent_redirect_uri"] = {"result":"N/A", "note":"token_request body 관찰 불가"}
@@ -278,13 +277,11 @@ def run_checks(raw: Dict[str, Any]) -> Dict[str, Any]:
         checklist["B"]["token_resent_redirect_uri"] = {"result":"N/A"}
 
     # ---------------- C. Leakage minimization & hardening -------------
-    # C1 Logs/Referer/History risk summary
     if code_in_url:
         checklist["C"]["front_channel_leak_risk"] = {"result":"Fail", "note":"URL에 code 존재(로그/Referer/히스토리 유출 위험)"}
     else:
         checklist["C"]["front_channel_leak_risk"] = {"result":"Pass"}
 
-    # C2 Referer policy (if subresources include external origins and code in URL -> high risk)
     subresources = (bundle.callback_request or {}).get("subresources") or []
     external_loaded = [u for u in subresources if u and urlparse(u).netloc]
     if code_in_url and external_loaded:
@@ -294,28 +291,15 @@ def run_checks(raw: Dict[str, Any]) -> Dict[str, Any]:
     else:
         checklist["C"]["referer_leak_risk"] = {"result":"Advisory" if code_in_url else "N/A"}
 
-    # C3 JAR/PAR usage check (best-effort)
     if ar.get("request_uri") or ar.get("request"):
         checklist["C"]["jar_par_usage"] = {"result":"Pass", "note":"요청 객체 관찰(무결성은 별도 검증)"}
     else:
-        # Try to infer from discovery if PAR is offered
         par_ep = (bundle.discovery or {}).get("pushed_authorization_request_endpoint") or \
                  ((bundle.discovery or {}).get("discovery_core") or {}).get("pushed_authorization_request_endpoint")
         if par_ep:
             checklist["C"]["jar_par_usage"] = {"result":"Advisory", "note":"서버가 PAR 제공 — 사용 권장"}
         else:
             checklist["C"]["jar_par_usage"] = {"result":"Advisory", "note":"JAR/PAR 미사용(권장)"}
-
-    # C4 mTLS/DPoP information (mitigation)
-    tk_json = (bundle.token_response.json or {}) if bundle.token_response else {}
-    token_type = (tk_json.get("token_type") or "Bearer").title()
-    dpop_hint = "dpop" in json.dumps(tk_json).lower()
-    m_tls = False  # not observable here
-    # Discovery hint for mTLS-capable AS
-    mtls_adv = None
-    mtls_aliases = (bundle.discovery or {}).get("mtls_endpoint_aliases") or ((bundle.discovery or {}).get("discovery_core") or {}).get("mtls_endpoint_aliases")
-    if mtls_aliases: mtls_adv = "AS supports mTLS aliases"
-    checklist["C"]["sender_constrained_tokens"] = {"result":"Info", "note": f"token_type={token_type}; DPoP_hint={dpop_hint}; mTLS_inferred={bool(mtls_adv)}"}
 
     ok = len(failures)==0
     observed = {

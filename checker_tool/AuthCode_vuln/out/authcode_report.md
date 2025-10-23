@@ -8,6 +8,8 @@ Flow: code  Overall: FAIL
 - form_post_used: Fail
   • code exposed in URL
 - iss_in_authorization_response: Pass
+- iss_matches_discovery: Pass
+  • iss == discovery.issuer (https://happy.songsings.site/kc/realms/web-service)
 - state_presence: Pass
   • 고엔트로피/예측 불가
 
@@ -24,8 +26,6 @@ Flow: code  Overall: FAIL
 - referer_leak_risk: Advisory
 - jar_par_usage: Advisory
   • 서버가 PAR 제공 — 사용 권장
-- sender_constrained_tokens: Info
-  • token_type=Bearer; DPoP_hint=False; mTLS_inferred=True
 
 Failures:
  - [C1] Unsafe redirect_uri :: 등록·정확 문자열 일치 및 HTTPS(네이티브 loopback 예외), 와일드카드/fragment 금지. :: evidence={'parsed': 'http://ksj15.ddns.net/django/accounts/oidc/callback/'}
