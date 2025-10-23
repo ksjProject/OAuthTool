@@ -2333,7 +2333,7 @@ if __name__ == "__main__":
     try:
         # 1️⃣ 기존 메인 로직 먼저 실행
         main()
-        
+
         # 2️⃣ main() 이후 자동 분석 실행
         from pathlib import Path
         from PGR.runner import run_analysis
@@ -2341,7 +2341,7 @@ if __name__ == "__main__":
         # 🔹 분석 대상 파일 경로 지정 (원하면 browser_artifacts로 바꿔도 됨)
         packets = Path("./proxy_artifacts/packets.jsonl")
         session = Path("./proxy_artifacts/session_token.json")
-        out = Path("./reports")
+        out = Path("./module_reports")
 
         print("\n[+] main() 실행 완료. 이제 run_analysis() 실행을 시작합니다...\n")
         run_analysis(packets, session, out)

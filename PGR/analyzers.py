@@ -298,7 +298,7 @@ class ClientSecretAnalyzer:
                     sev,
                     "client_secret가 토큰 교환 요청의 본문에 포함되어 전송되었습니다.",
                     evidence,
-                    "토큰 교환은 서버에서 수행되어야 하며, 항상 HTTPS를 사용하세요. client_secret은 안전한 저장소에 보관하세요."
+                    "토큰은 HTTP 헤더에 포함되어야 합니다."
                 ))
 
             # Basic Auth
