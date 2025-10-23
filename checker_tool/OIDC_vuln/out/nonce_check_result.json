@@ -1,24 +1,20 @@
 {
-  "ok": true,
-  "failures": [],
-  "warnings": [],
+  "ok": false,
+  "label": "ADVISORY",
   "flow_type": "code",
-  "observed": {
-    "flow_type": "code",
-    "request_scope": "openid profile email offline_access",
-    "request_response_type": "code",
-    "request_nonce": "H3tMI9xLqSDPWpiTkUS6Ya--bYnKCsKukAi5piiA76I",
-    "request_state": "8QAXwP9I0lyXEjJWB3UeCUlUvydEEMOrKCsfrNRzlvU"
-  },
+  "issues": [
+    {
+      "code": "A1",
+      "level": "ADVISORY",
+      "title": "PKCE 미사용 추정",
+      "detail": "code_challenge_method가 없어 PKCE 미사용으로 추정됩니다."
+    }
+  ],
   "checklist": {
     "A": {
       "flow_identify": {
-        "expect": "scope=openid AND response_type ∈ {code, id_token, code id_token, id_token token, code id_token token}",
-        "observed": {
-          "scope": "openid profile email offline_access",
-          "response_type": "code"
-        },
-        "result": "Pass"
+        "result": "Pass",
+        "observed": "{'scope': 'openid profile email offline_access', 'response_type': 'code'}"
       },
       "nonce_required_implicit_hybrid": {
         "result": "N/A"
@@ -45,14 +41,31 @@
       "nonce_replay_rejection": {
         "result": "Pass"
       },
-      "session_binding_disposal": {
-        "result": "Info",
-        "note": "세션 결속/사용 후 폐기는 구현 검토 항목(모듈은 관찰 불가)"
+      "iss_matches_discovery": {
+        "result": "N/A"
       },
-      "id_token_general_validation": {
-        "result": "Info",
-        "note": "서명/iss/aud/exp/iat/(at_hash|c_hash)은 별도 모듈에서 검증"
+      "aud_includes_client": {
+        "result": "Pass"
+      },
+      "alg_supported_by_discovery": {
+        "result": "Pass"
+      },
+      "kid_found_in_jwks": {
+        "result": "Pass"
       }
     }
+  },
+  "stats": {
+    "now_utc": "2025-10-23T11:37:45.977507+00:00",
+    "flow": "code",
+    "strict_code_nonce": true,
+    "req_nonce_len": 43,
+    "req_nonce_entropy_bits_per_char": 4.821613591911399,
+    "req_nonce_total_bits_est": 207.3,
+    "req_nonce_bits_method": "min(shannon,base64url)"
+  },
+  "policy": {
+    "strict_code_nonce": true,
+    "min_total_bits": 128
   }
 }

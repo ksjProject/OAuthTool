@@ -1,4 +1,6 @@
-Flow: code  Overall: PASS
+===== REPORT =====
+
+Flow: code  Overall: ADVISORY
 
 == A. Authorization Request ==
 - flow_identify: Pass
@@ -14,5 +16,12 @@ Flow: code  Overall: PASS
 == C. Client Validation ==
 - nonce_equality_validation: Pass
 - nonce_replay_rejection: Pass
-- session_binding_disposal: Info
-  • 세션 결속/사용 후 폐기는 구현 검토 항목(모듈은 관찰 불가)
+- iss_matches_discovery: N/A
+- aud_includes_client: Pass
+- alg_supported_by_discovery: Pass
+- kid_found_in_jwks: Pass
+
+Advisories:
+ - [A1] PKCE 미사용 추정
+    - 이유: 코드 플로우는 PKCE(S256)를 사용하는 것이 안전합니다.
+    - 조치: PKCE(S256) 사용: code_challenge/Method 설정 및 토큰 교환 시 code_verifier 제출.
