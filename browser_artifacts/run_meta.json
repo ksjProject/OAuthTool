@@ -1,0 +1,12 @@
+{
+  "started_at": "2025-10-22T00:23:33.060552+00:00",
+  "finished_at": "2025-10-22T00:24:25.916099+00:00",
+  "packets_saved": {
+    "requests": 36,
+    "responses": 36,
+    "errors": 0
+  },
+  "capture_mode": "external",
+  "selenium_wire_active": true,
+  "target_url": "ksj15.ddns.net/django"
+}

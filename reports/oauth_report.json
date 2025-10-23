@@ -1,0 +1,67 @@
+{
+  "groups": {
+    "5.1": {
+      "overall": "VULNERABLE",
+      "findings": [
+        {
+          "id": "5.1-QUERY-LEAK",
+          "title": "민감 파라미터가 URL 쿼리에 포함됨",
+          "severity": "HIGH",
+          "description": "민감 파라미터가 URL(프론트채널)에 남아 브라우저 히스토리/리퍼러로 유출될 수 있습니다.",
+          "evidence": "Request URL: http://ksj15.ddns.net/django/accounts/oidc/callback/?state=pAfXJ6B9SnjiuH6vMgodfUHNnBsSHcjpHSJR7IXDWdU&session_state=f27bee46-ba7b-446b-a5b4-d92fdfc007e0&iss=https%3A%2F%2Fhappy.songsings.site%2Fkc%2Frealms%2Fweb-service&code=3f54ee7a-2cac-4b6b-952d-0fff7bb4ecfa.f27bee46-ba7b-446b-a5b4-d92fdfc007e0.5cb442f6-10c8-4630-b248-0bb859b42688\nQuery param code=3f54**********************************************************************************************************",
+          "recommendation": "민감 값(client_secret, token 등)은 절대 URL에 포함하지 마십시오. 서버-사이드 POST로 처리하세요."
+        }
+      ]
+    },
+    "5.3": {
+      "overall": "PASS",
+      "findings": []
+    },
+    "5.5": {
+      "overall": "VULNERABLE",
+      "findings": [
+        {
+          "id": "5.5-RISKY-SCOPE",
+          "title": "과도한/민감한 scope 요청 (IDP-agnostic)",
+          "severity": "HIGH",
+          "description": "요청된 scope: email, offline_access, openid, profile",
+          "evidence": "Request URL: https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/auth?client_id=200-django&response_type=code&scope=openid+profile+email+offline_access&redirect_uri=http%3A%2F%2Fksj15.ddns.net%2Fdjango%2Faccounts%2Foidc%2Fcallback%2F&state=pAfXJ6B9SnjiuH6vMgodfUHNnBsSHcjpHSJR7IXDWdU\nRisk tokens: email, offline_access, profile\nRisk categories: OFFLINE, PRIVACY",
+          "recommendation": "최소 권한 원칙을 적용하고, 민감 범위는 별도 동의 절차로 분리하세요."
+        },
+        {
+          "id": "5.5-JWT-CLAIMS-INCONSISTENT",
+          "title": "JWT에 포함된 개인정보가 scope와 불일치",
+          "severity": "MEDIUM",
+          "description": "JWT에 개인정보 클레임이 포함되어 있으나 token의 scope와 정합하지 않습니다.",
+          "evidence": "JWT claims: {'iss': 'https://happy.songsings.site/kc/realms/web-service', 'aud': 'https://happy.songsings.site/kc/realms/web-service', 'sub': '5784d03a-53d3-4082-9d5a-f0a0b3ec6104', 'iat': 1760993235, '_token_prefix': 'eyJhbGciOiJIUzUxMiIsInR5...'}\nToken scope: None",
+          "recommendation": "JWT에 민감 클레임을 포함시키는 경우, 해당 권한(scope)이 명확히 부여되었는지 서버에서 검증하세요."
+        },
+        {
+          "id": "5.5-JWT-CLAIMS-INCONSISTENT",
+          "title": "JWT에 포함된 개인정보가 scope와 불일치",
+          "severity": "MEDIUM",
+          "description": "JWT에 개인정보 클레임이 포함되어 있으나 token의 scope와 정합하지 않습니다.",
+          "evidence": "JWT claims: {'iss': 'https://happy.songsings.site/kc/realms/web-service', 'aud': 'https://happy.songsings.site/kc/realms/web-service', 'sub': '5784d03a-53d3-4082-9d5a-f0a0b3ec6104', 'iat': 1760995986, '_token_prefix': 'eyJhbGciOiJIUzUxMiIsInR5...'}\nToken scope: None",
+          "recommendation": "JWT에 민감 클레임을 포함시키는 경우, 해당 권한(scope)이 명확히 부여되었는지 서버에서 검증하세요."
+        },
+        {
+          "id": "5.5-JWT-CLAIMS-INCONSISTENT",
+          "title": "JWT에 포함된 개인정보가 scope와 불일치",
+          "severity": "MEDIUM",
+          "description": "JWT에 개인정보 클레임이 포함되어 있으나 token의 scope와 정합하지 않습니다.",
+          "evidence": "JWT claims: {'iss': 'https://happy.songsings.site/kc/realms/web-service', 'aud': '200-django', 'sub': '5784d03a-53d3-4082-9d5a-f0a0b3ec6104', 'exp': 1760997786, 'iat': 1760995986, '_token_prefix': 'eyJhbGciOiJSUzI1NiIsInR5...'}\nToken scope: None",
+          "recommendation": "JWT에 민감 클레임을 포함시키는 경우, 해당 권한(scope)이 명확히 부여되었는지 서버에서 검증하세요."
+        },
+        {
+          "id": "5.5-JWT-CLAIMS-INCONSISTENT",
+          "title": "JWT에 포함된 개인정보가 scope와 불일치",
+          "severity": "MEDIUM",
+          "description": "JWT에 개인정보 클레임이 포함되어 있으나 token의 scope와 정합하지 않습니다.",
+          "evidence": "JWT claims: {'iss': 'https://happy.songsings.site/kc/realms/web-service', 'aud': 'account', 'sub': '5784d03a-53d3-4082-9d5a-f0a0b3ec6104', 'exp': 1760997786, 'iat': 1760995986, '_token_prefix': 'eyJhbGciOiJSUzI1NiIsInR5...'}\nToken scope: None",
+          "recommendation": "JWT에 민감 클레임을 포함시키는 경우, 해당 권한(scope)이 명확히 부여되었는지 서버에서 검증하세요."
+        }
+      ]
+    }
+  },
+  "overall": "VULNERABLE"
+}
