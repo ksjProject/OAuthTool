@@ -1,0 +1,96 @@
+{
+  "ok": false,
+  "failures": [
+    {
+      "code": "C1",
+      "title": "Unsafe redirect_uri",
+      "detail": "등록·정확 문자열 일치 및 HTTPS(네이티브 loopback 예외), 와일드카드/fragment 금지.",
+      "evidence": {
+        "parsed": "http://ksj15.ddns.net/django/accounts/oidc/callback/"
+      }
+    },
+    {
+      "code": "C2",
+      "title": "Authorization code in URL (front-channel)",
+      "detail": "response_mode=form_post를 사용해 로그/Referer/히스토리 누출을 차단하세요.",
+      "evidence": {
+        "location": "http://ksj15.ddns.net/django/accounts/oidc/callback/?state=8QAXwP9I0lyXEjJWB3UeCUlUvydEEMOrKCsfrNRzlvU&session_state=d5d17a8d-ccab-4b25-86fa-3c7d0cdb99c1&iss=https%3A%2F%2Fhappy.songsings.site%2Fkc%2Frealms%2Fweb-service&code=44f6f282-4182-46b2-b930-f394f997e381.d5d17a8d-ccab-4b25-86fa-3c7d0cdb99c1.5cb442f6-10c8-4630-b248-0bb859b42688"
+      }
+    },
+    {
+      "code": "C4",
+      "title": "PKCE missing",
+      "detail": "코드 플로우에 PKCE(S256) 필수.",
+      "evidence": {
+        "response_type": "code"
+      }
+    }
+  ],
+  "warnings": [],
+  "flow_type": "code",
+  "observed": {
+    "flow_type": "code",
+    "redirect_uri": "http://ksj15.ddns.net/django/accounts/oidc/callback/",
+    "response_mode": null,
+    "iss_in_response": true,
+    "pkce": {
+      "present": false,
+      "method": null
+    },
+    "token_request_keys": [],
+    "state_present": true,
+    "code_in_url": true
+  },
+  "checklist": {
+    "A": {
+      "redirect_uri_safety": {
+        "result": "Fail",
+        "note": "HTTPS 강제(네이티브 loopback 예외)",
+        "observed": {
+          "redirect_uri": "http://ksj15.ddns.net/django/accounts/oidc/callback/"
+        }
+      },
+      "form_post_used": {
+        "result": "Fail",
+        "note": "code exposed in URL"
+      },
+      "iss_in_authorization_response": {
+        "result": "Pass"
+      },
+      "state_presence": {
+        "result": "Pass",
+        "note": "고엔트로피/예측 불가"
+      }
+    },
+    "B": {
+      "pkce_s256_in_request": {
+        "result": "Fail",
+        "note": "code_challenge 누락 또는 method≠S256"
+      },
+      "token_has_code_verifier": {
+        "result": "N/A"
+      },
+      "token_resent_redirect_uri": {
+        "result": "N/A",
+        "note": "token_request body 관찰 불가"
+      }
+    },
+    "C": {
+      "front_channel_leak_risk": {
+        "result": "Fail",
+        "note": "URL에 code 존재(로그/Referer/히스토리 유출 위험)"
+      },
+      "referer_leak_risk": {
+        "result": "Advisory"
+      },
+      "jar_par_usage": {
+        "result": "Advisory",
+        "note": "JAR/PAR 미사용(권장)"
+      },
+      "sender_constrained_tokens": {
+        "result": "Info",
+        "note": "token_type=Bearer; DPoP_hint=False; mTLS=False"
+      }
+    }
+  }
+}

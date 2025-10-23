@@ -1,13 +1,13 @@
-Overall: FAIL
+Overall: PASS
 
 == A) Authorization Server / OP ==
-- jwks_uri_https: Fail
-  • {'jwks_uri': None}
-- issuer_host_matches_jwks_uri: N/A
-  • {'issuer': None, 'jwks_uri': None}
-- jwks_has_keys: Fail
-  • {'keys_count': 0}
-- jwks_duplicate_kid: N/A
+- jwks_uri_https: Pass
+  • {'jwks_uri': 'https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/certs'}
+- issuer_host_matches_jwks_uri: Pass
+  • {'issuer': 'https://happy.songsings.site/kc/realms/web-service', 'jwks_uri': 'https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/certs'}
+- jwks_has_keys: Pass
+  • {'keys_count': 2}
+- jwks_duplicate_kid: Pass
   • {'dupe_kids': {}}
 - jwks_use_keyops: Pass
   • {'use_missing_kids': []}
@@ -15,21 +15,21 @@ Overall: FAIL
   • {'external_header_fields': {}}
 
 == B) RP / Resource Server (검증자) ==
-- pin_issuer_jwks_uri: N/A
-  • {'issuer': None, 'jwks_uri': None}
+- pin_issuer_jwks_uri: Pass
+  • {'issuer': 'https://happy.songsings.site/kc/realms/web-service', 'jwks_uri': 'https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/certs'}
 - alg_whitelist_id_token: Pass
   • {'alg': 'RS256'}
 - alg_whitelist_access_token: Pass
   • {'alg': 'RS256'}
 - alg_whitelist_client_assertion: N/A
 - kid_present_id_token: Pass
-- kid_known_id_token: Fail
-  • {'kid': '0T-gnXeKbsLJgXWpBj9TRba00ALG3jb1qeXjThbmf_Q'}
+- kid_known_id_token: Pass
+- kid_use_sig_id_token: Pass
 - header_external_ref_id_token: Pass
 - kid_pattern_id_token: Pass
 - kid_present_access_token: Pass
-- kid_known_access_token: Fail
-  • {'kid': '0T-gnXeKbsLJgXWpBj9TRba00ALG3jb1qeXjThbmf_Q'}
+- kid_known_access_token: Pass
+- kid_use_sig_access_token: Pass
 - header_external_ref_access_token: Pass
 - kid_pattern_access_token: Pass
 - kid_present_client_assertion: N/A
@@ -42,9 +42,3 @@ Overall: FAIL
   • {'tokens_with_external_ref': []}
 - hs_rs_switch: Pass
 - kid_traversal: Pass
-
-Failures:
- - [K-A1] jwks_uri missing :: Discovery에 jwks_uri가 없어 키 출처를 고정할 수 없음. :: evidence={'discovery': {'issuer': None, 'jwks_uri': None}}
- - [K-A3] JWKS empty :: JWKS에 키가 없음. :: evidence={'jwks': {'keys': []}}
- - [K-B4] id_token의 kid가 JWKS에 없음 :: 재조회 후에도 없으면 fail-closed. :: evidence={'kid': '0T-gnXeKbsLJgXWpBj9TRba00ALG3jb1qeXjThbmf_Q'}
- - [K-B4] access_token의 kid가 JWKS에 없음 :: 재조회 후에도 없으면 fail-closed. :: evidence={'kid': '0T-gnXeKbsLJgXWpBj9TRba00ALG3jb1qeXjThbmf_Q'}

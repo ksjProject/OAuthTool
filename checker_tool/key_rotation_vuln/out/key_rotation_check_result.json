@@ -1,48 +1,10 @@
 {
-  "ok": false,
-  "failures": [
-    {
-      "code": "K-A1",
-      "title": "jwks_uri missing",
-      "detail": "Discovery에 jwks_uri가 없어 키 출처를 고정할 수 없음.",
-      "evidence": {
-        "discovery": {
-          "issuer": null,
-          "jwks_uri": null
-        }
-      }
-    },
-    {
-      "code": "K-A3",
-      "title": "JWKS empty",
-      "detail": "JWKS에 키가 없음.",
-      "evidence": {
-        "jwks": {
-          "keys": []
-        }
-      }
-    },
-    {
-      "code": "K-B4",
-      "title": "id_token의 kid가 JWKS에 없음",
-      "detail": "재조회 후에도 없으면 fail-closed.",
-      "evidence": {
-        "kid": "0T-gnXeKbsLJgXWpBj9TRba00ALG3jb1qeXjThbmf_Q"
-      }
-    },
-    {
-      "code": "K-B4",
-      "title": "access_token의 kid가 JWKS에 없음",
-      "detail": "재조회 후에도 없으면 fail-closed.",
-      "evidence": {
-        "kid": "0T-gnXeKbsLJgXWpBj9TRba00ALG3jb1qeXjThbmf_Q"
-      }
-    }
-  ],
+  "ok": true,
+  "failures": [],
   "warnings": [],
   "observed": {
-    "issuer": null,
-    "jwks_uri": null,
+    "issuer": "https://happy.songsings.site/kc/realms/web-service",
+    "jwks_uri": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/certs",
     "allowed_algs": [
       "ES256",
       "ES384",
@@ -59,26 +21,26 @@
   "checklist": {
     "A": {
       "jwks_uri_https": {
-        "result": "Fail",
+        "result": "Pass",
         "observed": {
-          "jwks_uri": null
+          "jwks_uri": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/certs"
         }
       },
       "issuer_host_matches_jwks_uri": {
-        "result": "N/A",
+        "result": "Pass",
         "observed": {
-          "issuer": null,
-          "jwks_uri": null
+          "issuer": "https://happy.songsings.site/kc/realms/web-service",
+          "jwks_uri": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/certs"
         }
       },
       "jwks_has_keys": {
-        "result": "Fail",
+        "result": "Pass",
         "observed": {
-          "keys_count": 0
+          "keys_count": 2
         }
       },
       "jwks_duplicate_kid": {
-        "result": "N/A",
+        "result": "Pass",
         "observed": {
           "dupe_kids": {}
         }
@@ -98,10 +60,10 @@
     },
     "B": {
       "pin_issuer_jwks_uri": {
-        "result": "N/A",
+        "result": "Pass",
         "observed": {
-          "issuer": null,
-          "jwks_uri": null
+          "issuer": "https://happy.songsings.site/kc/realms/web-service",
+          "jwks_uri": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/certs"
         }
       },
       "alg_whitelist_id_token": {
@@ -124,10 +86,10 @@
         "result": "Pass"
       },
       "kid_known_id_token": {
-        "result": "Fail",
-        "observed": {
-          "kid": "0T-gnXeKbsLJgXWpBj9TRba00ALG3jb1qeXjThbmf_Q"
-        }
+        "result": "Pass"
+      },
+      "kid_use_sig_id_token": {
+        "result": "Pass"
       },
       "header_external_ref_id_token": {
         "result": "Pass"
@@ -139,10 +101,10 @@
         "result": "Pass"
       },
       "kid_known_access_token": {
-        "result": "Fail",
-        "observed": {
-          "kid": "0T-gnXeKbsLJgXWpBj9TRba00ALG3jb1qeXjThbmf_Q"
-        }
+        "result": "Pass"
+      },
+      "kid_use_sig_access_token": {
+        "result": "Pass"
       },
       "header_external_ref_access_token": {
         "result": "Pass"
