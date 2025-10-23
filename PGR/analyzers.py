@@ -1,68 +1,126 @@
 # -*- coding: utf-8 -*-
 """
 analyzers.py
-Combined analyzers (ClientSecret / State / Consent) + human-readable report.
-UTF-8 안전, Base64 디코딩/마스킹 처리, sample packets included.
+Combined analyzers (ClientSecret / State / Consent / OtherSensitive) + human-readable report.
+- Robust base64 decoding
+- Header normalization
+- URL query/fragment parsing
+- PASS/FAIL/NA status per check, per group, and overall
+- Human-readable console output + oauth_report.json
 
 Usage:
   from analyzers import analyze_and_report
   analyze_and_report(packets, session_tokens)
 """
+
 from typing import List, Dict, Any
 from urllib.parse import urlparse, parse_qs, parse_qsl
-import json, re, base64
-from collections import Counter
-import re
-import json
 from collections import defaultdict, Counter
-import re
+import base64, json, re
 
-# --- Mock helpers (replace with your real project helpers) ---
-def extract_request_body_text(pkt: Dict[str, Any]) -> str:
-    body_b64 = pkt.get("body_b64")
-    if body_b64:
+# ==================== Robust Parsing Helpers ====================
+
+def safe_b64decode(b64: str) -> bytes:
+    """패딩 및 URL-safe를 고려한 안전한 base64 디코더. 실패 시 b'' 반환."""
+    if not b64:
+        return b""
+    try:
+        padded = b64 + "=" * (-len(b64) % 4)
+        return base64.b64decode(padded)
+    except Exception:
         try:
-            return base64.b64decode(body_b64).decode("utf-8", errors="replace")
+            padded = b64 + "=" * (-len(b64) % 4)
+            return base64.urlsafe_b64decode(padded)
         except Exception:
-            return "<decode-error>"
-    body = pkt.get("body", "")
-    if isinstance(body, bytes):
-        return body.decode("utf-8", errors="replace")
-    return str(body)
+            return b""
 
-def extract_response_body_text(pkt: Dict[str, Any]) -> str:
-    resp = pkt.get("response_body","")
-    if isinstance(resp, bytes):
-        return resp.decode("utf-8", errors="replace")
-    return str(resp)
+def normalize_headers(hdrs: Dict[str, Any]) -> Dict[str, str]:
+    """헤더 키를 소문자로 정규화해 조회 누락 방지."""
+    return {(k or "").lower(): v for k, v in (hdrs or {}).items()}
+
+def parse_query_fragment(url: str) -> Dict[str, Any]:
+    """
+    URL에서 query와 fragment를 querystring으로 파싱.
+    반환: {"url","path","scheme","query":{...},"fragment":{...}}
+    - 동일 키 다중 출현 시 마지막 값 사용
+    - 값 없음도 keep (keep_blank_values=True)
+    """
+    try:
+        p = urlparse(url)
+        q = dict(parse_qsl(p.query, keep_blank_values=True))
+        frag = dict(parse_qsl(p.fragment, keep_blank_values=True))
+        return {"url": url, "path": p.path, "scheme": p.scheme, "query": q, "fragment": frag}
+    except Exception:
+        return {"url": url, "path": "", "scheme": "", "query": {}, "fragment": {}}
 
 def mask_secret(val: str, keep: int = 4) -> str:
-    if not val: return ""
-    val = str(val)
-    return val[:keep] + "*"*(len(val)-keep)
+    """증거 출력용 간단 마스킹 (앞/뒤 일부 유지)."""
+    if val is None:
+        return ""
+    s = str(val)
+    if len(s) <= keep * 2:
+        return s[:keep] + "..." + s[-keep:]
+    return s[:keep] + "..." + s[-keep:]
+
+def extract_request_body_text(pkt: Dict[str, Any]) -> str:
+    """
+    packets.jsonl의 request.body_b64를 디코딩해 텍스트로 반환.
+    - 없거나 실패 시 "" 반환
+    - UTF-8 우선 + latin-1 폴백
+    """
+    req = pkt.get("request") or {}
+    b64 = req.get("body_b64") or ""
+    if not b64:
+        return ""
+    b = safe_b64decode(b64)
+    if not b:
+        return ""
+    try:
+        return b.decode("utf-8", "ignore")
+    except Exception:
+        return b.decode("latin-1", "ignore")
+
+def extract_response_body_text(pkt: Dict[str, Any]) -> str:
+    """
+    packets.jsonl의 response.body_b64를 디코딩해 텍스트로 반환.
+    - 없거나 실패 시 "" 반환
+    - UTF-8 우선 + latin-1 폴백
+    """
+    resp = pkt.get("response") or {}
+    b64 = resp.get("body_b64") or ""
+    if not b64:
+        return ""
+    b = safe_b64decode(b64)
+    if not b:
+        return ""
+    try:
+        return b.decode("utf-8", "ignore")
+    except Exception:
+        return b.decode("latin-1", "ignore")
+
+# ==================== Entropy Helper (원래 로직 유지) ====================
 
 def looks_random_state(state: str):
     """
-    state 문자열의 무작위성을 간단히 추정합니다.
-    - base64url 문자군 여부 확인
-    - 샤논 엔트로피(문자 분포 기반)로 총 비트수 추정
+    state 문자열의 무작위성을 간단히 추정:
+    - base64url 문자군 여부
+    - 샤논 엔트로피로 총 비트수 추정
     - UUID v4면 122비트로 통과 처리
     OK 기준:
       - UUID v4  또는
       - (base64url 문자군) and (길이 ≥ 22) and (추정 엔트로피 비트 ≥ 128)
     """
     import math, re
-    from collections import Counter
+    from collections import Counter as _C
 
     if not state:
         return {"ok": False, "reason": "empty", "length": 0}
 
     # UUID v4 패턴 (122 bits of randomness)
-    uuid_v4 = bool(re.fullmatch(
+    if re.fullmatch(
         r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
         state, re.I
-    ))
-    if uuid_v4:
+    ):
         return {
             "ok": True, "uuid_v4": True, "bits": 122,
             "entropy_per_char": None, "length": len(state),
@@ -74,17 +132,16 @@ def looks_random_state(state: str):
     charset_ok = all((c in charset) for c in state)
 
     n = len(state)
-    counts = Counter(state)
+    cnt = _C(state)
 
     # 샤논 엔트로피 (per-char, bits)
     H = 0.0
-    for k in counts.values():
+    for k in cnt.values():
         p = k / n
         H -= p * math.log2(p)
 
-    # 총 엔트로피 비트수
-    bits = H * n  # 이론적 최대는 n * log2(64) = 6n
-
+    # 총 엔트로피 비트수 (최대 6n)
+    bits = H * n
     ok = (charset_ok and n >= 22 and bits >= 128)
 
     return {
@@ -95,119 +152,190 @@ def looks_random_state(state: str):
         "charset_ok": charset_ok,
         "uuid_v4": False,
         "reason": (
-            "ok"
-            if ok else
+            "ok" if ok else
             ("bad-charset" if not charset_ok else
              ("too-short" if n < 22 else "low-entropy"))
         )
     }
 
-# --- Finding factory ---
+# ==================== Finding factory ====================
+
 def mkfind(fid: str, title: str, sev: str, desc: str, evidence: str, rec: str) -> Dict[str, Any]:
     return {"id": fid, "title": title, "severity": sev, "description": desc, "evidence": evidence, "recommendation": rec}
 
-# --- Utility: parse query & fragment ---
-def parse_query_fragment(url: str) -> Dict[str, Any]:
-    try:
-        p = urlparse(url)
-        q = dict(parse_qsl(p.query, keep_blank_values=True))
-        frag = dict(parse_qsl(p.fragment, keep_blank_values=True))
-        return {"url": url, "path": p.path, "scheme": p.scheme, "query": q, "fragment": frag}
-    except:
-        return {"url": url, "path": "", "scheme": "", "query": {}, "fragment": {}}
-
 # ==================== Analyzer Classes ====================
 
-class ClientSecretAnalyzer:
-    SENSITIVE_KEYS = {"client_secret", "access_token", "id_token", "refresh_token", "code"}
+class OtherSensitiveAnalyzer:
+    """
+    client_secret을 제외한 다른 프론트채널 민감 키들(access_token, id_token, refresh_token 등)
+    에 대한 진단.
+    """
+    SENSITIVE_KEYS = {"access_token", "id_token", "refresh_token"}
 
     def analyze(self, packets: List[Dict[str, Any]], session_tokens: Dict[str, Any]) -> List[Dict[str, Any]]:
         findings: List[Dict[str, Any]] = []
 
-        # 1) URL query secrets
+        # 1) URL query: access_token/id_token/refresh_token 노출
         for pkt in packets:
-            if pkt.get("type") != "request": continue
+            if pkt.get("type") != "request":
+                continue
             req = pkt.get("request", {})
-            url = req.get("url","")
+            url = req.get("url", "")
             pf = parse_query_fragment(url)
-            for k in self.SENSITIVE_KEYS & set(pf["query"].keys()):
+            leaked = self.SENSITIVE_KEYS & set(pf["query"].keys())
+            for k in leaked:
                 v = pf["query"][k]
                 evidence = f"Request URL: {url}\nQuery param {k}={mask_secret(v)}"
-                findings.append(mkfind("5.1-QUERY-LEAK",
-                                        "민감 파라미터가 URL 쿼리에 포함됨",
-                                        "HIGH",
-                                        "민감 파라미터가 URL(프론트채널)에 남아 브라우저 히스토리/리퍼러로 유출될 수 있습니다.",
-                                        evidence,
-                                        "민감 값(client_secret, token 등)은 절대 URL에 포함하지 마십시오. 서버-사이드 POST로 처리하세요."))
+                findings.append(mkfind(
+                    "5.0-QUERY-SENSITIVE",
+                    f"민감 파라미터({k})가 URL 쿼리에 포함됨",
+                    "HIGH",
+                    f"{k}은(는) 프론트채널 노출에 민감한 값입니다. URL에 포함될 경우 노출 위험이 큽니다.",
+                    evidence,
+                    "민감 값은 URL에 포함하지 마시고, 필요 시 안전한 백엔드 전송/세션 방식으로 처리하세요."
+                ))
 
-        # 2) Referer header leaks
+        # 2) Referer 헤더로 노출
         for pkt in packets:
-            if pkt.get("type") != "request": continue
-            req = pkt.get("request",{})
-            headers = req.get("headers",{})
-            ref = headers.get("Referer") or headers.get("referer")
-            if not ref: continue
+            if pkt.get("type") != "request":
+                continue
+            req = pkt.get("request", {})
+            headers = normalize_headers(req.get("headers", {}))
+            ref = headers.get("referer")
+            if not ref:
+                continue
             pf = parse_query_fragment(ref)
-            for k in self.SENSITIVE_KEYS & set(pf["query"].keys()):
+            leaked = self.SENSITIVE_KEYS & set(pf["query"].keys())
+            for k in leaked:
                 v = pf["query"][k]
                 evidence = f"Request URL: {req.get('url')}\nReferer: {ref}\nLeaked: {k}={mask_secret(v)}"
-                findings.append(mkfind("5.1-REFERER-LEAK",
-                                        "Referer 헤더로 민감 파라미터 유출",
-                                        "HIGH",
-                                        "리퍼러에 민감값이 포함되어 제3자에 유출될 수 있습니다.",
-                                        evidence,
-                                        "Referrer-Policy 설정 및 URL에 민감 파라미터 보관 금지."))
+                findings.append(mkfind(
+                    "5.0-REFERER-SENSITIVE",
+                    f"Referer로 민감 파라미터({k}) 유출",
+                    "HIGH",
+                    f"Referer에 {k}이(가) 포함되어 제3자에 유출될 수 있습니다.",
+                    evidence,
+                    "Referrer-Policy 적용 및 URL에 민감 파라미터 보관 금지."
+                ))
+
+        return findings
+
+
+class ClientSecretAnalyzer:
+    """
+    URL 쿼리 / Referer 헤더에서 client_secret 노출 탐지 + 토큰 엔드포인트 본문/Basic 인증 확인.
+    """
+    TARGET_KEY = "client_secret"
+
+    def analyze(self, packets: List[Dict[str, Any]], session_tokens: Dict[str, Any]) -> List[Dict[str, Any]]:
+        findings: List[Dict[str, Any]] = []
+
+        # 1) URL query에 client_secret 포함 여부
+        for pkt in packets:
+            if pkt.get("type") != "request":
+                continue
+            req = pkt.get("request", {})
+            url = req.get("url", "")
+            pf = parse_query_fragment(url)
+            if self.TARGET_KEY in pf["query"]:
+                v = pf["query"][self.TARGET_KEY]
+                evidence = f"Request URL: {url}\nQuery param {self.TARGET_KEY}={mask_secret(v)}"
+                findings.append(mkfind(
+                    "5.1-QUERY-CLIENT-SECRET",
+                    "client_secret이 URL 쿼리에 포함됨",
+                    "CRITICAL",
+                    "client_secret은 서버-사이드 비밀이며 URL(프론트채널)에 남겨서는 안 됩니다. 브라우저 히스토리/리퍼러로 유출될 수 있습니다.",
+                    evidence,
+                    "client_secret은 절대 URL에 포함하지 마십시오. 서버-사이드 POST 또는 안전한 백엔드 인증 방식으로 처리하세요."
+                ))
+
+        # 2) Referer 헤더로 client_secret 유출 여부
+        for pkt in packets:
+            if pkt.get("type") != "request":
+                continue
+            req = pkt.get("request", {})
+            headers = normalize_headers(req.get("headers", {}))
+            ref = headers.get("referer")
+            if not ref:
+                continue
+            pf = parse_query_fragment(ref)
+            if self.TARGET_KEY in pf["query"]:
+                v = pf["query"][self.TARGET_KEY]
+                evidence = f"Request URL: {req.get('url')}\nReferer: {ref}\nLeaked: {self.TARGET_KEY}={mask_secret(v)}"
+                findings.append(mkfind(
+                    "5.1-REFERER-CLIENT-SECRET",
+                    "Referer로 client_secret 유출",
+                    "CRITICAL",
+                    "Referer 헤더에 client_secret이 포함되어 제3자에게 유출될 수 있습니다.",
+                    evidence,
+                    "Referrer-Policy 설정(예: no-referrer) 적용 및 URL에 민감값 보관 금지."
+                ))
 
         # 3) Token endpoint POST / Authorization Basic
         token_paths = ["/protocol/openid-connect/token", "/oauth/token", "/token"]
-        def looks_token_url(u): return any(p in urlparse(u).path for p in token_paths)
+        def looks_token_url(u): 
+            try:
+                path = urlparse(u).path or ""
+            except Exception:
+                path = ""
+            return any(p in path for p in token_paths)
+
         for pkt in packets:
-            if pkt.get("type") != "request": continue
-            req = pkt.get("request",{})
-            url = req.get("url","")
-            if not looks_token_url(url): continue
+            if pkt.get("type") != "request":
+                continue
+            req = pkt.get("request", {})
+            url = req.get("url", "")
+            if not looks_token_url(url):
+                continue
 
             body_txt = extract_request_body_text(pkt)
             if "client_secret=" in body_txt or '"client_secret"' in body_txt:
-                sev = "CRITICAL" if urlparse(url).scheme != "https" else "HIGH"
+                sev = "CRITICAL" if (urlparse(url).scheme or "").lower() != "https" else "HIGH"
                 evidence = f"Token endpoint POST to {url}\nbody snippet: {body_txt[:300]}"
-                findings.append(mkfind("5.1-TOKEN-BODY-SECRET",
-                                        "Token 요청에서 client_secret 전송 감지",
-                                        sev,
-                                        "client_secret가 토큰 교환 요청의 본문에 포함되어 전송되었습니다.",
-                                        evidence,
-                                        "토큰 교환은 서버에서 수행되어야 하며, 항상 HTTPS를 사용하세요. client_secret은 안전한 저장소에 보관하세요."))
+                findings.append(mkfind(
+                    "5.1-TOKEN-BODY-SECRET",
+                    "Token 요청에서 client_secret 전송 감지",
+                    sev,
+                    "client_secret가 토큰 교환 요청의 본문에 포함되어 전송되었습니다.",
+                    evidence,
+                    "토큰 교환은 서버에서 수행되어야 하며, 항상 HTTPS를 사용하세요. client_secret은 안전한 저장소에 보관하세요."
+                ))
 
             # Basic Auth
-            auth = req.get("headers",{}).get("Authorization","") or req.get("headers",{}).get("authorization","")
-            if auth.lower().startswith("basic "):
+            auth = normalize_headers(req.get("headers", {})).get("authorization", "")
+            if isinstance(auth, str) and auth.lower().startswith("basic "):
                 try:
-                    enc = auth.split(None,1)[1]
-                    decoded = base64.b64decode(enc + "=" * (-len(enc)%4)).decode("utf-8","replace")
-                except:
+                    enc = auth.split(None, 1)[1]
+                    decoded = base64.b64decode(enc + "=" * (-len(enc) % 4)).decode("utf-8", "replace")
+                except Exception:
                     decoded = "<decode-failed>"
-                sev = "CRITICAL" if urlparse(url).scheme != "https" else "INFO"
+                sev = "CRITICAL" if (urlparse(url).scheme or "").lower() != "https" else "INFO"
                 evidence = f"Token endpoint {url}\nAuthorization Basic (decoded mask): {mask_secret(decoded,8)}"
-                findings.append(mkfind("5.1-TOKEN-AUTH-BASIC",
-                                        "Token 요청에서 Authorization: Basic 사용 감지",
-                                        sev,
-                                        "Basic 인증(보통 client_id:client_secret)이 토큰 엔드포인트에 사용되었습니다.",
-                                        evidence,
-                                        "HTTPS 사용 보장 및 로그에 비밀이 남지 않도록 하십시오."))
+                findings.append(mkfind(
+                    "5.1-TOKEN-AUTH-BASIC",
+                    "Token 요청에서 Authorization: Basic 사용 감지",
+                    sev,
+                    "Basic 인증(보통 client_id:client_secret)이 토큰 엔드포인트에 사용되었습니다.",
+                    evidence,
+                    "HTTPS 사용 보장 및 로그에 비밀이 남지 않도록 하십시오."
+                ))
 
         # 4) session_tokens
-        for it in session_tokens.get("oauth_tokens",[]):
-            if (it.get("key") or "").lower()=="client_secret":
-                findings.append(mkfind("5.1-SESSION-TOKEN-SECRET",
-                                        "session_token.json에 client_secret 기록 감지",
-                                        "HIGH",
-                                        "요약 파일(session_token.json)에 client_secret 항목이 기록되어 있습니다.",
-                                        f"Location: {it.get('where')} url={it.get('url')} value={mask_secret(it.get('value'))}",
-                                        "진단용 로그에도 민감값을 남기지 마십시오. 마스킹/암호화/접근통제 필요"))
+        for it in session_tokens.get("oauth_tokens", []):
+            if (it.get("key") or "").lower() == "client_secret":
+                findings.append(mkfind(
+                    "5.1-SESSION-TOKEN-SECRET",
+                    "session_token.json에 client_secret 기록 감지",
+                    "HIGH",
+                    "요약 파일(session_token.json)에 client_secret 항목이 기록되어 있습니다.",
+                    f"Location: {it.get('where')} url={it.get('url')} value={mask_secret(it.get('value'))}",
+                    "진단용 로그에도 민감값을 남기지 마십시오. 마스킹/암호화/접근통제 필요"
+                ))
         return findings
 
-# ==================== State Analyzer ====================
+
 class StateAnalyzer:
+    """state 존재/무작위성/재사용 및 콜백 state 검증."""
     MIN_STATE_LEN = 22  # ≈ 128비트 base64url 기준 (16바이트)
 
     def analyze(self, packets, session_tokens):
@@ -245,7 +373,6 @@ class StateAnalyzer:
                 ))
                 continue
 
-            # 기존 무작위성 검사
             metrics = looks_random_state(st)
             states.append(st)
             if not metrics.get("ok", False):
@@ -287,10 +414,10 @@ class StateAnalyzer:
 
         return findings
 
-# ==================== Consent Analyzer ====================
-    
+
 class ConsentAnalyzer:
-    # 기본 RISKY / PRIVACY (기존과 연동)
+    """동의(Consent) 요청에서 과도/민감 scope 탐지 (IDP-agnostic)."""
+
     RISKY = {
         "offline_access", "roles", "admin",
         "manage-account", "manage-users", "manage-clients",
@@ -309,14 +436,12 @@ class ConsentAnalyzer:
         r"^owner$",
         r"^root$",
     )]
-
     MANAGE_PREFIXES = ("manage-", "manage_", "manage:", "scim.manage", "manage")
     MANAGE_PATTERNS = [re.compile(p, re.I) for p in (
         r"^manage[-_:].*",
         r"^manage$",
         r".*:manage[:_\-]?.*",
     )]
-
     ROLES_PATTERNS = [re.compile(p, re.I) for p in (
         r"^roles?$",
         r"^groups?$",
@@ -325,24 +450,17 @@ class ConsentAnalyzer:
         r"^scope:roles$",
         r"^group[_-]?membership$",
     )]
-
     OFFLINE_PATTERNS = [re.compile(p, re.I) for p in (
         r"offline_access",
         r"\boffline\b",
         r"refresh[_-]?token",
     )]
-
     PRIVACY_KEYWORDS = {
         "email", "email_verified", "phone", "phone_number", "address",
         "profile", "name", "given_name", "family_name"
     }
 
     def __init__(self, time_window_hours=24, behavioral_checks=False, custom_patterns=None):
-        """
-        time_window_hours: behavioral(운영) 감지용 윈도우(패킷에 timestamp 필요)
-        behavioral_checks: 기본 False (운영 모드에서 True)
-        custom_patterns: dict으로 ADMIN_PATTERNS/ROLES_PATTERNS 등 추가 가능
-        """
         self.time_window_hours = time_window_hours
         self.behavioral_checks = behavioral_checks
         if custom_patterns:
@@ -350,7 +468,6 @@ class ConsentAnalyzer:
                 if hasattr(self, key) and isinstance(getattr(self, key), list):
                     getattr(self, key).extend([re.compile(p, re.I) for p in pats])
 
-    # ---------- 헬퍼 ----------
     def _match_any(self, token, patterns):
         if not token:
             return False
@@ -369,7 +486,6 @@ class ConsentAnalyzer:
         return self._match_any(token, self.MANAGE_PATTERNS)
 
     def _classify_scope_token(self, token):
-        """토큰 하나를 카테고리로 분류: ADMIN / MANAGE / ROLES / OFFLINE / PRIVACY / None"""
         if not token:
             return None
         if self._match_any(token, self.ADMIN_PATTERNS):
@@ -384,7 +500,6 @@ class ConsentAnalyzer:
             return "PRIVACY"
         return None
 
-    # ---------- 분석기 ----------
     def analyze(self, packets, session_tokens):
         findings = []
         client_scope_counter = Counter()
@@ -425,7 +540,6 @@ class ConsentAnalyzer:
                     "최소 권한 원칙을 적용하고, 민감 범위는 별도 동의 절차로 분리하세요."
                 ))
 
-                # 클라이언트별 집계(옵션)
                 cid = q.get("client_id")
                 if cid:
                     client_scope_counter[cid] += 1
@@ -433,85 +547,106 @@ class ConsentAnalyzer:
                         ts = pkt.get("timestamp", 0)
                         client_times[cid].append(ts)
 
-        # 2) token/userinfo 응답: 개인정보(claims) 과다 제공 검사
-        for pkt in packets:
-            resp = extract_response_body_text(pkt)
-            if not resp:
-                continue
-            try:
-                data = json.loads(resp)
-            except Exception:
-                continue
-            if not isinstance(data, dict):
-                continue
-
-            claims = set(data.keys())
-            privacy_claims = claims & self.PRIVACY
-            if privacy_claims:
-                scope = data.get("scope", "")
-                scope_set = set(scope.split()) if isinstance(scope, str) and scope else set()
-                over = {c for c in privacy_claims if c not in scope_set}
-                if over:
-                    findings.append(mkfind(
-                        "5.5-OVER-SHARE",
-                        "요청 scope 대비 과도한 개인정보 제공",
-                        "MEDIUM",
-                        f"응답에 민감 클레임({', '.join(sorted(privacy_claims))})이 포함되어 있고, scope와 불일치가 있습니다.",
-                        f"Response URL: {pkt.get('request', {}).get('url')}\nClaims: {', '.join(sorted(privacy_claims))}\nResp scope: {scope}",
-                        "권한-클레임 매핑을 검토하고, scope에 없는 개인정보는 응답하지 않도록 서버 설정을 변경하세요."
-                    ))
-
-            # 역할/그룹/권한 클레임 노출 검사
-            for role_alias in ("roles", "groups", "permissions", "app_roles"):
-                if role_alias in data:
-                    findings.append(mkfind(
-                        "5.5-ROLE-EXPOSE",
-                        "응답에 역할/권한 정보 포함",
-                        "HIGH",
-                        f"응답에 '{role_alias}' 클레임이 존재합니다. 클라이언트가 역할 정보를 받을 필요가 있는지 검토하세요.",
-                        f"Response URL: {pkt.get('request', {}).get('url')}\nClaim: {role_alias}",
-                        "역할/권한 정보는 최소 권한 원칙에 따라 제한적으로 제공하세요."
-                    ))
-
-        # 3) session에 포함된 JWT 클레임 불일치
-        for c in session_tokens.get("jwt_claims", []):
-            findings.append(mkfind(
-                "5.5-JWT-CLAIMS-INCONSISTENT",
-                "JWT에 포함된 개인정보가 scope와 불일치",
-                "MEDIUM",
-                "JWT에 개인정보 클레임이 포함되어 있으나 token의 scope와 정합하지 않습니다.",
-                f"JWT claims: {c}\nToken scope: {session_tokens.get('oauth_scope')}",
-                "JWT에 민감 클레임을 포함시키는 경우, 해당 권한(scope)이 명확히 부여되었는지 서버에서 검증하세요."
-            ))
         return findings
 
-# ==================== Report Generator ====================
-EXPECTED_CHECKS={
-    "5.1":[("5.1-QUERY-LEAK","Client Secret","민감 파라미터가 URL 쿼리에 포함됨"),
-           ("5.1-REFERER-LEAK","Referer Leak","Referer 헤더로 민감 파라미터 유출"),
-           ("5.1-TOKEN-BODY-SECRET","Token Body Secret","Token 요청에서 client_secret 전송 감지"),
-           ("5.1-TOKEN-AUTH-BASIC","Token Auth Basic","Token 요청에서 Authorization: Basic 사용 감지"),
-           ("5.1-SESSION-TOKEN-SECRET","Session token secret","session_token.json에 client_secret 기록 감지")],
-    "5.3":[("5.3-STATE-MISSING","State Missing","Authorization 요청에 state 누락"),
-           ("5.3-STATE-LOW-ENTROPY","State Low Entropy","state 무작위성 부족"),
-           ("5.3-STATE-REUSE","State Reuse","state 재사용 감지"),
-           ("5.3-CB-STATE-MISSING","Callback State Missing","콜백에 state 누락"),
-           ("5.3-CB-STATE-MISMATCH","Callback State Mismatch","콜백 state 불일치(알 수 없음)")],
-    "5.5":[("5.5-RISKY-SCOPE","Risky Scope","과도한/민감한 scope 요청"),
-           ("5.5-OVER-SHARE","Over-share Claims","요청 scope 대비 과도한 개인정보 제공"),
-           ("5.5-JWT-CLAIMS-INCONSISTENT","JWT Claims Inconsistent","JWT에 포함된 개인정보가 scope와 불일치")],
+# ==================== Report Generator (PASS/FAIL/NA) ====================
+
+EXPECTED_CHECKS = {
+    "5.0": [
+        ("5.0-QUERY-SENSITIVE",   "Query Sensitive",   "민감 파라미터가 URL 쿼리에 포함됨"),
+        ("5.0-REFERER-SENSITIVE", "Referer Sensitive", "Referer로 민감 파라미터 유출"),
+    ],
+    "5.1": [
+        ("5.1-QUERY-CLIENT-SECRET",   "Client Secret Query",    "client_secret이 URL 쿼리에 포함됨"),
+        ("5.1-REFERER-CLIENT-SECRET", "Client Secret Referer",  "Referer로 client_secret 유출"),
+        ("5.1-TOKEN-BODY-SECRET",     "Token Body Secret",      "Token 요청에서 client_secret 전송 감지"),
+        ("5.1-TOKEN-AUTH-BASIC",      "Token Auth Basic",       "Token 요청에서 Authorization: Basic 사용 감지"),
+        ("5.1-SESSION-TOKEN-SECRET",  "Session token secret",   "session_token.json에 client_secret 기록 감지"),
+    ],
+    "5.3": [
+        ("5.3-STATE-MISSING",      "State Missing",           "Authorization 요청에 state 누락"),
+        ("5.3-STATE-LOW-ENTROPY",  "State Low Entropy",       "state 무작위성 부족"),
+        ("5.3-STATE-REUSE",        "State Reuse",             "state 재사용 감지"),
+        ("5.3-CB-STATE-MISSING",   "Callback State Missing",  "콜백에 state 누락"),
+        ("5.3-CB-STATE-MISMATCH",  "Callback State Mismatch", "콜백 state 불일치(알 수 없음)"),
+    ],
+    "5.5": [
+        ("5.5-RISKY-SCOPE", "Risky Scope", "과도한/민감한 scope 요청"),
+    ],
 }
 
 def analyze_and_report(packets: List[Dict[str,Any]], session_tokens:Dict[str,Any]) -> Dict[str,Any]:
-    analyzers=[ClientSecretAnalyzer(), StateAnalyzer(), ConsentAnalyzer()]
-    all_findings=[]
+    analyzers = [ClientSecretAnalyzer(), StateAnalyzer(), ConsentAnalyzer(), OtherSensitiveAnalyzer()]
+    all_findings: List[Dict[str, Any]] = []
+
+    # ---- 사전 플래그(NA 판단용, 확장) ----
+    token_paths = ["/protocol/openid-connect/token", "/oauth/token", "/token"]
+    def looks_token_url(u):
+        try:
+            return any(p in (urlparse(u).path or "") for p in token_paths)
+        except Exception:
+            return False
+
+    saw_any_request = False
+    saw_any_query = False                 # 어떤 요청이라도 querystring 존재
+    saw_any_referer = False               # 어떤 요청이라도 Referer 헤더 존재
+    saw_token_endpoint = False            # 토큰 엔드포인트 호출 관측
+    saw_auth_request = False              # authorize 요청 관측
+    saw_callback_with_code = False        # 콜백에 code 관측
+    saw_scope_on_auth = False             # authorize 요청 중 scope 파라미터 관측
+    session_oauth_tokens_present = bool(session_tokens.get("oauth_tokens"))
+
+    for pkt in packets:
+        if pkt.get("type") != "request":
+            continue
+        saw_any_request = True
+
+        req = pkt.get("request", {}) or {}
+        url = req.get("url", "") or ""
+
+        # 쿼리 유무
+        try:
+            parsed = urlparse(url)
+            if parsed.query:
+                saw_any_query = True
+        except Exception:
+            pass
+
+        # Referer 유무
+        hdrs = normalize_headers(req.get("headers", {}))
+        if hdrs.get("referer"):
+            saw_any_referer = True
+
+        # 토큰 엔드포인트
+        if looks_token_url(url):
+            saw_token_endpoint = True
+
+        # authorize / callback 플래그
+        if ("/authorize" in url) or ("response_type=" in url) or ("/protocol/openid-connect/auth" in url):
+            saw_auth_request = True
+            try:
+                q = dict(parse_qsl(urlparse(url).query, keep_blank_values=True))
+                if "scope" in q and q["scope"]:
+                    saw_scope_on_auth = True
+            except Exception:
+                pass
+
+        try:
+            q = parse_qs(urlparse(url).query, keep_blank_values=True)
+            if "code" in q:
+                saw_callback_with_code = True
+        except Exception:
+            pass
+
+    # ---- Analyzer 실행 ----
     for a in analyzers:
         try:
             all_findings.extend(a.analyze(packets, session_tokens))
         except Exception as e:
-            all_findings.append(mkfind("999.ERR", "Analyzer error", "INFO", "Analyzer raised exception", str(e), "Fix analyzer code."))
+            all_findings.append(mkfind("999.ERR", "Analyzer error", "INFO",
+                                       "Analyzer raised exception", str(e), "Fix analyzer code."))
 
-    # 그룹 추출 함수
+    # 그룹 추출
     def group_from_id(fid: str) -> str:
         if not fid:
             return "5.1"
@@ -525,7 +660,7 @@ def analyze_and_report(packets: List[Dict[str,Any]], session_tokens:Dict[str,Any
         return "5.1"
 
     # 기본 그룹 초기화
-    groups = {gid: {"findings": [], "overall": "PASS"} for gid in EXPECTED_CHECKS}
+    groups: Dict[str, Dict[str, Any]] = {gid: {"findings": [], "overall": "PASS"} for gid in EXPECTED_CHECKS}
 
     # Finding들을 그룹화
     for f in all_findings:
@@ -535,47 +670,127 @@ def analyze_and_report(packets: List[Dict[str,Any]], session_tokens:Dict[str,Any
             groups[gid] = {"findings": [], "overall": "PASS"}
         groups[gid]["findings"].append(f)
 
-    # 그룹 상태 계산
-    for gid, info in groups.items():
-        info["overall"] = "VULNERABLE" if info["findings"] else "PASS"
+    # ---- 체크별 결과(PASS/FAIL/NA) 산출 (확장 NA RULES) ----
+    NA_RULES = {
+        # 5.0
+        "5.0-QUERY-SENSITIVE":   lambda: (not saw_any_request) or (not saw_any_query),
+        "5.0-REFERER-SENSITIVE": lambda: (not saw_any_request) or (not saw_any_referer),
 
-    # 최종 보고서 구성
+        # 5.1
+        "5.1-QUERY-CLIENT-SECRET":   lambda: (not saw_any_request) or (not saw_any_query),
+        "5.1-REFERER-CLIENT-SECRET": lambda: (not saw_any_request) or (not saw_any_referer),
+        "5.1-TOKEN-BODY-SECRET":     lambda: not saw_token_endpoint,
+        "5.1-TOKEN-AUTH-BASIC":      lambda: not saw_token_endpoint,
+        "5.1-SESSION-TOKEN-SECRET":  lambda: not session_oauth_tokens_present,
+
+        # 5.3
+        "5.3-STATE-MISSING":     lambda: not saw_auth_request,
+        "5.3-STATE-LOW-ENTROPY": lambda: not saw_auth_request,
+        "5.3-STATE-REUSE":       lambda: not saw_auth_request,
+        "5.3-CB-STATE-MISSING":  lambda: not saw_callback_with_code,
+        "5.3-CB-STATE-MISMATCH": lambda: not saw_callback_with_code,
+
+        # 5.5
+        "5.5-RISKY-SCOPE":       lambda: not saw_scope_on_auth,
+    }
+
+    # 그룹 결과 구성 + JSON-friendly 구조 생성
+    json_groups: Dict[str, Any] = {}
+    for gid, checks in EXPECTED_CHECKS.items():
+        check_results = []
+        f_map = {f["id"]: f for f in groups.get(gid, {}).get("findings", [])}
+
+        for check_id, short, desc in checks:
+            finding = f_map.get(check_id)
+            if finding:
+                result = "FAIL"
+            else:
+                na_func = NA_RULES.get(check_id)
+                result = "NA" if (na_func and na_func()) else "PASS"
+
+            entry: Dict[str, Any] = {
+                "id": check_id,
+                "title": short,
+                "description": desc,
+                "result": result,  # ← JSON 필드 이름은 result
+            }
+            if result == "FAIL":
+                entry["severity"] = finding.get("severity")
+                entry["evidence"] = finding.get("evidence")
+                entry["recommendation"] = finding.get("recommendation")
+                entry["full_title"] = finding.get("title")
+            check_results.append(entry)
+
+        results = [c["result"] for c in check_results]
+        if any(r == "FAIL" for r in results):
+            grp_overall = "FAIL"
+        elif all(r == "NA" for r in results):
+            grp_overall = "NA"
+        else:
+            grp_overall = "PASS"
+
+        json_groups[gid] = {
+            "overall": grp_overall,
+            "checks": check_results,
+        }
+
+    # 전체 overall
+    group_overalls = [g["overall"] for g in json_groups.values()]
+    if any(r == "FAIL" for r in group_overalls):
+        overall = "FAIL"
+    elif all(r == "NA" for r in group_overalls):
+        overall = "NA"
+    else:
+        overall = "PASS"
+
     report = {
-        "groups": {gid: {"overall": info["overall"], "findings": info["findings"]} for gid, info in groups.items()},
-        "overall": "VULNERABLE" if any(info["overall"] == "VULNERABLE" for info in groups.values()) else "PASS"
+        "groups": json_groups,
+        "overall": overall
     }
 
     # JSON 저장
     with open("oauth_report.json", "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
 
-    # 사람 읽기용 출력
+    # ==================== 사람 읽기용 출력 ====================
     print("==================== OAuth Security Analysis Report ====================")
     for gid, checks in EXPECTED_CHECKS.items():
         print(f"[{gid}]")
+        f_map = {f["id"]: f for f in groups.get(gid, {}).get("findings", [])}
+
         for check_id, short, desc in checks:
-            match = next((x for x in all_findings if x.get("id") == check_id), None)
-            if match:
-                print(f"\n└─ {match['title']}\n│ Severity : {match['severity']}\n│ Description: {match['description']}\n│ Evidence:\n{match['evidence']}\n│ Recommendation: {match['recommendation']}\n")
+            finding = f_map.get(check_id)
+            if finding:
+                result = "FAIL"
+            else:
+                na_func = NA_RULES.get(check_id)
+                result = "NA" if (na_func and na_func()) else "PASS"
+
+            if result == "FAIL":
+                print(f"❌ {short} FAIL")
+                print(f"\n└─ {finding['title']}\n│ Severity : {finding['severity']}\n│ Description: {finding['description']}\n│ Evidence:\n{finding['evidence']}\n│ Recommendation: {finding['recommendation']}\n")
+            elif result == "NA":
+                print(f"➖ {short} NA")
             else:
                 print(f"✅ {short} PASS")
-        grp_overall = report.get("groups", {}).get(gid, {}).get("overall", "UNKNOWN")
-        print(f"▶ Group overall: {grp_overall}\n")
+
+        print(f"▶ Group overall: {report['groups'][gid]['overall']}\n")
 
     print(f"==================== Overall result: {report.get('overall', 'UNKNOWN')} ====================")
     print("[+] JSON report saved: oauth_report.json")
     return report
 
+
 # ==================== Example harness ====================
-if __name__=="__main__":
+if __name__ == "__main__":
     example_packets = [
         {
             "type": "request",
             "request": {
-                "url": "https://example.com/callback?client_secret=abcd1234",
-                "headers": {"User-Agent": "TestAgent"}
-            },
-            "body_b64": base64.b64encode("grant_type=authorization_code&code=xyz".encode()).decode()
+                "url": "https://example.com/callback?client_secret=abcd1234&state=foo",
+                "headers": {"User-Agent": "TestAgent", "Referer": "https://r.example/?id_token=XYZ"},
+                "body_b64": base64.b64encode("grant_type=authorization_code&code=xyz".encode()).decode()
+            }
         }
     ]
     example_session_tokens = {"oauth_tokens": [], "jwt_claims": []}

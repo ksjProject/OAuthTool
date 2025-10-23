@@ -1,67 +1,111 @@
 {
   "groups": {
-    "5.1": {
-      "overall": "VULNERABLE",
-      "findings": [
+    "5.0": {
+      "overall": "PASS",
+      "checks": [
         {
-          "id": "5.1-QUERY-LEAK",
-          "title": "민감 파라미터가 URL 쿼리에 포함됨",
+          "id": "5.0-QUERY-SENSITIVE",
+          "title": "Query Sensitive",
+          "description": "민감 파라미터가 URL 쿼리에 포함됨",
+          "result": "PASS"
+        },
+        {
+          "id": "5.0-REFERER-SENSITIVE",
+          "title": "Referer Sensitive",
+          "description": "Referer로 민감 파라미터 유출",
+          "result": "PASS"
+        }
+      ]
+    },
+    "5.1": {
+      "overall": "FAIL",
+      "checks": [
+        {
+          "id": "5.1-QUERY-CLIENT-SECRET",
+          "title": "Client Secret Query",
+          "description": "client_secret이 URL 쿼리에 포함됨",
+          "result": "PASS"
+        },
+        {
+          "id": "5.1-REFERER-CLIENT-SECRET",
+          "title": "Client Secret Referer",
+          "description": "Referer로 client_secret 유출",
+          "result": "PASS"
+        },
+        {
+          "id": "5.1-TOKEN-BODY-SECRET",
+          "title": "Token Body Secret",
+          "description": "Token 요청에서 client_secret 전송 감지",
+          "result": "FAIL",
           "severity": "HIGH",
-          "description": "민감 파라미터가 URL(프론트채널)에 남아 브라우저 히스토리/리퍼러로 유출될 수 있습니다.",
-          "evidence": "Request URL: http://ksj15.ddns.net/django/accounts/oidc/callback/?state=pAfXJ6B9SnjiuH6vMgodfUHNnBsSHcjpHSJR7IXDWdU&session_state=f27bee46-ba7b-446b-a5b4-d92fdfc007e0&iss=https%3A%2F%2Fhappy.songsings.site%2Fkc%2Frealms%2Fweb-service&code=3f54ee7a-2cac-4b6b-952d-0fff7bb4ecfa.f27bee46-ba7b-446b-a5b4-d92fdfc007e0.5cb442f6-10c8-4630-b248-0bb859b42688\nQuery param code=3f54**********************************************************************************************************",
-          "recommendation": "민감 값(client_secret, token 등)은 절대 URL에 포함하지 마십시오. 서버-사이드 POST로 처리하세요."
+          "evidence": "Token endpoint POST to https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/token\nbody snippet: grant_type=authorization_code&client_id=200-django&client_secret=KiolOZrdVwr5nr7jHYgrYK8j81qYJVfo&code=3f54ee7a-2cac-4b6b-952d-0fff7bb4ecfa.f27bee46-ba7b-446b-a5b4-d92fdfc007e0.5cb442f6-10c8-4630-b248-0bb859b42688&redirect_uri=http%3A%2F%2Fksj15.ddns.net%2Fdjango%2Faccounts%2Foidc%2Fcallback%2F",
+          "recommendation": "토큰 교환은 서버에서 수행되어야 하며, 항상 HTTPS를 사용하세요. client_secret은 안전한 저장소에 보관하세요.",
+          "full_title": "Token 요청에서 client_secret 전송 감지"
+        },
+        {
+          "id": "5.1-TOKEN-AUTH-BASIC",
+          "title": "Token Auth Basic",
+          "description": "Token 요청에서 Authorization: Basic 사용 감지",
+          "result": "PASS"
+        },
+        {
+          "id": "5.1-SESSION-TOKEN-SECRET",
+          "title": "Session token secret",
+          "description": "session_token.json에 client_secret 기록 감지",
+          "result": "PASS"
         }
       ]
     },
     "5.3": {
       "overall": "PASS",
-      "findings": []
+      "checks": [
+        {
+          "id": "5.3-STATE-MISSING",
+          "title": "State Missing",
+          "description": "Authorization 요청에 state 누락",
+          "result": "PASS"
+        },
+        {
+          "id": "5.3-STATE-LOW-ENTROPY",
+          "title": "State Low Entropy",
+          "description": "state 무작위성 부족",
+          "result": "PASS"
+        },
+        {
+          "id": "5.3-STATE-REUSE",
+          "title": "State Reuse",
+          "description": "state 재사용 감지",
+          "result": "PASS"
+        },
+        {
+          "id": "5.3-CB-STATE-MISSING",
+          "title": "Callback State Missing",
+          "description": "콜백에 state 누락",
+          "result": "PASS"
+        },
+        {
+          "id": "5.3-CB-STATE-MISMATCH",
+          "title": "Callback State Mismatch",
+          "description": "콜백 state 불일치(알 수 없음)",
+          "result": "PASS"
+        }
+      ]
     },
     "5.5": {
-      "overall": "VULNERABLE",
-      "findings": [
+      "overall": "FAIL",
+      "checks": [
         {
           "id": "5.5-RISKY-SCOPE",
-          "title": "과도한/민감한 scope 요청 (IDP-agnostic)",
+          "title": "Risky Scope",
+          "description": "과도한/민감한 scope 요청",
+          "result": "FAIL",
           "severity": "HIGH",
-          "description": "요청된 scope: email, offline_access, openid, profile",
           "evidence": "Request URL: https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/auth?client_id=200-django&response_type=code&scope=openid+profile+email+offline_access&redirect_uri=http%3A%2F%2Fksj15.ddns.net%2Fdjango%2Faccounts%2Foidc%2Fcallback%2F&state=pAfXJ6B9SnjiuH6vMgodfUHNnBsSHcjpHSJR7IXDWdU\nRisk tokens: email, offline_access, profile\nRisk categories: OFFLINE, PRIVACY",
-          "recommendation": "최소 권한 원칙을 적용하고, 민감 범위는 별도 동의 절차로 분리하세요."
-        },
-        {
-          "id": "5.5-JWT-CLAIMS-INCONSISTENT",
-          "title": "JWT에 포함된 개인정보가 scope와 불일치",
-          "severity": "MEDIUM",
-          "description": "JWT에 개인정보 클레임이 포함되어 있으나 token의 scope와 정합하지 않습니다.",
-          "evidence": "JWT claims: {'iss': 'https://happy.songsings.site/kc/realms/web-service', 'aud': 'https://happy.songsings.site/kc/realms/web-service', 'sub': '5784d03a-53d3-4082-9d5a-f0a0b3ec6104', 'iat': 1760993235, '_token_prefix': 'eyJhbGciOiJIUzUxMiIsInR5...'}\nToken scope: None",
-          "recommendation": "JWT에 민감 클레임을 포함시키는 경우, 해당 권한(scope)이 명확히 부여되었는지 서버에서 검증하세요."
-        },
-        {
-          "id": "5.5-JWT-CLAIMS-INCONSISTENT",
-          "title": "JWT에 포함된 개인정보가 scope와 불일치",
-          "severity": "MEDIUM",
-          "description": "JWT에 개인정보 클레임이 포함되어 있으나 token의 scope와 정합하지 않습니다.",
-          "evidence": "JWT claims: {'iss': 'https://happy.songsings.site/kc/realms/web-service', 'aud': 'https://happy.songsings.site/kc/realms/web-service', 'sub': '5784d03a-53d3-4082-9d5a-f0a0b3ec6104', 'iat': 1760995986, '_token_prefix': 'eyJhbGciOiJIUzUxMiIsInR5...'}\nToken scope: None",
-          "recommendation": "JWT에 민감 클레임을 포함시키는 경우, 해당 권한(scope)이 명확히 부여되었는지 서버에서 검증하세요."
-        },
-        {
-          "id": "5.5-JWT-CLAIMS-INCONSISTENT",
-          "title": "JWT에 포함된 개인정보가 scope와 불일치",
-          "severity": "MEDIUM",
-          "description": "JWT에 개인정보 클레임이 포함되어 있으나 token의 scope와 정합하지 않습니다.",
-          "evidence": "JWT claims: {'iss': 'https://happy.songsings.site/kc/realms/web-service', 'aud': '200-django', 'sub': '5784d03a-53d3-4082-9d5a-f0a0b3ec6104', 'exp': 1760997786, 'iat': 1760995986, '_token_prefix': 'eyJhbGciOiJSUzI1NiIsInR5...'}\nToken scope: None",
-          "recommendation": "JWT에 민감 클레임을 포함시키는 경우, 해당 권한(scope)이 명확히 부여되었는지 서버에서 검증하세요."
-        },
-        {
-          "id": "5.5-JWT-CLAIMS-INCONSISTENT",
-          "title": "JWT에 포함된 개인정보가 scope와 불일치",
-          "severity": "MEDIUM",
-          "description": "JWT에 개인정보 클레임이 포함되어 있으나 token의 scope와 정합하지 않습니다.",
-          "evidence": "JWT claims: {'iss': 'https://happy.songsings.site/kc/realms/web-service', 'aud': 'account', 'sub': '5784d03a-53d3-4082-9d5a-f0a0b3ec6104', 'exp': 1760997786, 'iat': 1760995986, '_token_prefix': 'eyJhbGciOiJSUzI1NiIsInR5...'}\nToken scope: None",
-          "recommendation": "JWT에 민감 클레임을 포함시키는 경우, 해당 권한(scope)이 명확히 부여되었는지 서버에서 검증하세요."
+          "recommendation": "최소 권한 원칙을 적용하고, 민감 범위는 별도 동의 절차로 분리하세요.",
+          "full_title": "과도한/민감한 scope 요청 (IDP-agnostic)"
         }
       ]
     }
   },
-  "overall": "VULNERABLE"
+  "overall": "FAIL"
 }
