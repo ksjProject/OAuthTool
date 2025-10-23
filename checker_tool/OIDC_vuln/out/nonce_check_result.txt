@@ -5,23 +5,19 @@ Flow: code  Overall: ADVISORY
 == A. Authorization Request ==
 - flow_identify: Pass
   • {'scope': 'openid profile email offline_access', 'response_type': 'code'}
-- nonce_required_implicit_hybrid: N/A
 - nonce_used_in_codeflow: Pass
 - nonce_entropy_freshness: Pass
 
 == B. ID Token ==
 - id_token_must_include_nonce_if_requested: Pass
-- implicit_hybrid_idtoken_has_nonce: N/A
 
 == C. Client Validation ==
 - nonce_equality_validation: Pass
 - nonce_replay_rejection: Pass
-- iss_matches_discovery: N/A
+- iss_matches_discovery: Pass
 - aud_includes_client: Pass
 - alg_supported_by_discovery: Pass
 - kid_found_in_jwks: Pass
 
 Advisories:
  - [A1] PKCE 미사용 추정
-    - 이유: 코드 플로우는 PKCE(S256)를 사용하는 것이 안전합니다.
-    - 조치: PKCE(S256) 사용: code_challenge/Method 설정 및 토큰 교환 시 code_verifier 제출.

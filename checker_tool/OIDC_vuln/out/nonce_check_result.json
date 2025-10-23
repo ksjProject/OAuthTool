@@ -16,9 +16,6 @@
         "result": "Pass",
         "observed": "{'scope': 'openid profile email offline_access', 'response_type': 'code'}"
       },
-      "nonce_required_implicit_hybrid": {
-        "result": "N/A"
-      },
       "nonce_used_in_codeflow": {
         "result": "Pass"
       },
@@ -29,9 +26,6 @@
     "B": {
       "id_token_must_include_nonce_if_requested": {
         "result": "Pass"
-      },
-      "implicit_hybrid_idtoken_has_nonce": {
-        "result": "N/A"
       }
     },
     "C": {
@@ -42,7 +36,7 @@
         "result": "Pass"
       },
       "iss_matches_discovery": {
-        "result": "N/A"
+        "result": "Pass"
       },
       "aud_includes_client": {
         "result": "Pass"
@@ -56,7 +50,7 @@
     }
   },
   "stats": {
-    "now_utc": "2025-10-23T11:37:45.977507+00:00",
+    "now_utc": "2025-10-23T13:59:23.784429+00:00",
     "flow": "code",
     "strict_code_nonce": true,
     "req_nonce_len": 43,
