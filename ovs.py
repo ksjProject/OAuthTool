@@ -2335,7 +2335,7 @@ if __name__ == "__main__":
 
         # 2️⃣ main() 이후 자동 분석 실행
         from pathlib import Path
-        from PGR.runner import run_analysis
+        from module_G.runner import run_analysis
 
         # 🔹 분석 대상 파일 경로 지정 (원하면 browser_artifacts로 바꿔도 됨)
         packets = Path("./proxy_artifacts/packets.jsonl")
