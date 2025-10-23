@@ -1,2 +1,0 @@
-# OAuthTool
-ksjProjectTool
