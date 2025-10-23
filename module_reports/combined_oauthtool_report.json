@@ -1,0 +1,605 @@
+{
+  "groups": {
+    "5.0": {
+      "overall": "PASS",
+      "checks": [
+        {
+          "id": "5.0-QUERY-SENSITIVE",
+          "title": "Query Sensitive",
+          "description": "민감 파라미터가 URL 쿼리에 포함됨",
+          "result": "PASS"
+        },
+        {
+          "id": "5.0-REFERER-SENSITIVE",
+          "title": "Referer Sensitive",
+          "description": "Referer로 민감 파라미터 유출",
+          "result": "PASS"
+        }
+      ]
+    },
+    "5.1": {
+      "overall": "FAIL",
+      "checks": [
+        {
+          "id": "5.1-QUERY-CLIENT-SECRET",
+          "title": "Client Secret Query",
+          "description": "client_secret이 URL 쿼리에 포함됨",
+          "result": "PASS"
+        },
+        {
+          "id": "5.1-REFERER-CLIENT-SECRET",
+          "title": "Client Secret Referer",
+          "description": "Referer로 client_secret 유출",
+          "result": "PASS"
+        },
+        {
+          "id": "5.1-TOKEN-BODY-SECRET",
+          "title": "Token Body Secret",
+          "description": "Token 요청에서 client_secret 전송 감지",
+          "result": "FAIL",
+          "severity": "HIGH",
+          "evidence": "Token endpoint POST to https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/token\nbody snippet: grant_type=authorization_code&client_id=200-django&client_secret=KiolOZrdVwr5nr7jHYgrYK8j81qYJVfo&code=3f54ee7a-2cac-4b6b-952d-0fff7bb4ecfa.f27bee46-ba7b-446b-a5b4-d92fdfc007e0.5cb442f6-10c8-4630-b248-0bb859b42688&redirect_uri=http%3A%2F%2Fksj15.ddns.net%2Fdjango%2Faccounts%2Foidc%2Fcallback%2F",
+          "recommendation": "토큰 교환은 서버에서 수행되어야 하며, 항상 HTTPS를 사용하세요. client_secret은 안전한 저장소에 보관하세요.",
+          "full_title": "Token 요청에서 client_secret 전송 감지"
+        },
+        {
+          "id": "5.1-TOKEN-AUTH-BASIC",
+          "title": "Token Auth Basic",
+          "description": "Token 요청에서 Authorization: Basic 사용 감지",
+          "result": "PASS"
+        },
+        {
+          "id": "5.1-SESSION-TOKEN-SECRET",
+          "title": "Session token secret",
+          "description": "session_token.json에 client_secret 기록 감지",
+          "result": "PASS"
+        }
+      ]
+    },
+    "5.3": {
+      "overall": "PASS",
+      "checks": [
+        {
+          "id": "5.3-STATE-MISSING",
+          "title": "State Missing",
+          "description": "Authorization 요청에 state 누락",
+          "result": "PASS"
+        },
+        {
+          "id": "5.3-STATE-LOW-ENTROPY",
+          "title": "State Low Entropy",
+          "description": "state 무작위성 부족",
+          "result": "PASS"
+        },
+        {
+          "id": "5.3-STATE-REUSE",
+          "title": "State Reuse",
+          "description": "state 재사용 감지",
+          "result": "PASS"
+        },
+        {
+          "id": "5.3-CB-STATE-MISSING",
+          "title": "Callback State Missing",
+          "description": "콜백에 state 누락",
+          "result": "PASS"
+        },
+        {
+          "id": "5.3-CB-STATE-MISMATCH",
+          "title": "Callback State Mismatch",
+          "description": "콜백 state 불일치(알 수 없음)",
+          "result": "PASS"
+        }
+      ]
+    },
+    "5.5": {
+      "overall": "FAIL",
+      "checks": [
+        {
+          "id": "5.5-RISKY-SCOPE",
+          "title": "Risky Scope",
+          "description": "과도한/민감한 scope 요청",
+          "result": "FAIL",
+          "severity": "HIGH",
+          "evidence": "Request URL: https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/auth?client_id=200-django&response_type=code&scope=openid+profile+email+offline_access&redirect_uri=http%3A%2F%2Fksj15.ddns.net%2Fdjango%2Faccounts%2Foidc%2Fcallback%2F&state=pAfXJ6B9SnjiuH6vMgodfUHNnBsSHcjpHSJR7IXDWdU\nRisk tokens: email, offline_access, profile\nRisk categories: OFFLINE, PRIVACY",
+          "recommendation": "최소 권한 원칙을 적용하고, 민감 범위는 별도 동의 절차로 분리하세요.",
+          "full_title": "과도한/민감한 scope 요청 (IDP-agnostic)"
+        }
+      ]
+    }
+  },
+  "overall": "FAIL",
+  "authcode_report": {
+    "ok": false,
+    "failures": [
+      {
+        "code": "C1",
+        "title": "Unsafe redirect_uri",
+        "detail": "등록·정확 문자열 일치 및 HTTPS(네이티브 loopback 예외), 와일드카드/fragment 금지.",
+        "evidence": {
+          "parsed": "http://ksj15.ddns.net/django/accounts/oidc/callback/"
+        }
+      },
+      {
+        "code": "C2",
+        "title": "Authorization code in URL (front-channel)",
+        "detail": "response_mode=form_post를 사용해 로그/Referer/히스토리 누출을 차단하세요.",
+        "evidence": {
+          "location": "http://ksj15.ddns.net/django/accounts/oidc/callback/?state=8QAXwP9I0lyXEjJWB3UeCUlUvydEEMOrKCsfrNRzlvU&session_state=d5d17a8d-ccab-4b25-86fa-3c7d0cdb99c1&iss=https%3A%2F%2Fhappy.songsings.site%2Fkc%2Frealms%2Fweb-service&code=44f6f282-4182-46b2-b930-f394f997e381.d5d17a8d-ccab-4b25-86fa-3c7d0cdb99c1.5cb442f6-10c8-4630-b248-0bb859b42688"
+        }
+      },
+      {
+        "code": "C4",
+        "title": "PKCE missing",
+        "detail": "코드 플로우에 PKCE(S256) 필수.",
+        "evidence": {
+          "response_type": "code"
+        }
+      }
+    ],
+    "warnings": [
+      {
+        "code": "C4H",
+        "title": "Provider supports 'plain' PKCE",
+        "detail": "서버가 plain을 지원 — 다운그레이드 위험, S256만 허용하도록 구성 권장.",
+        "evidence": {
+          "discovery": [
+            "plain",
+            "S256"
+          ]
+        }
+      }
+    ],
+    "flow_type": "code",
+    "observed": {
+      "flow_type": "code",
+      "redirect_uri": "http://ksj15.ddns.net/django/accounts/oidc/callback/",
+      "response_mode": null,
+      "iss_in_response": true,
+      "issuer_from_discovery": "https://happy.songsings.site/kc/realms/web-service",
+      "pkce": {
+        "present": false,
+        "method": null
+      },
+      "token_request_keys": [],
+      "state_present": true,
+      "code_in_url": true
+    },
+    "checklist": {
+      "A": {
+        "redirect_uri_safety": {
+          "result": "Fail",
+          "note": "HTTPS 강제(네이티브 loopback 예외)",
+          "observed": {
+            "redirect_uri": "http://ksj15.ddns.net/django/accounts/oidc/callback/"
+          }
+        },
+        "form_post_used": {
+          "result": "Fail",
+          "note": "code exposed in URL"
+        },
+        "iss_in_authorization_response": {
+          "result": "Pass"
+        },
+        "iss_matches_discovery": {
+          "result": "Pass",
+          "note": "iss == discovery.issuer (https://happy.songsings.site/kc/realms/web-service)"
+        },
+        "state_presence": {
+          "result": "Pass",
+          "note": "고엔트로피/예측 불가"
+        }
+      },
+      "B": {
+        "pkce_s256_in_request": {
+          "result": "Fail",
+          "note": "code_challenge 누락 또는 method≠S256"
+        },
+        "token_has_code_verifier": {
+          "result": "N/A"
+        },
+        "token_resent_redirect_uri": {
+          "result": "N/A",
+          "note": "token_request body 관찰 불가"
+        }
+      },
+      "C": {
+        "front_channel_leak_risk": {
+          "result": "Fail",
+          "note": "URL에 code 존재(로그/Referer/히스토리 유출 위험)"
+        },
+        "referer_leak_risk": {
+          "result": "Advisory"
+        },
+        "jar_par_usage": {
+          "result": "Advisory",
+          "note": "서버가 PAR 제공 — 사용 권장"
+        }
+      }
+    }
+  },
+  "nonce_check_result": {
+    "ok": false,
+    "label": "ADVISORY",
+    "flow_type": "code",
+    "issues": [
+      {
+        "code": "A1",
+        "level": "ADVISORY",
+        "title": "PKCE 미사용 추정",
+        "detail": "code_challenge_method가 없어 PKCE 미사용으로 추정됩니다."
+      }
+    ],
+    "checklist": {
+      "A": {
+        "flow_identify": {
+          "result": "Pass",
+          "observed": "{'scope': 'openid profile email offline_access', 'response_type': 'code'}"
+        },
+        "nonce_used_in_codeflow": {
+          "result": "Pass"
+        },
+        "nonce_entropy_freshness": {
+          "result": "Pass"
+        }
+      },
+      "B": {
+        "id_token_must_include_nonce_if_requested": {
+          "result": "Pass"
+        }
+      },
+      "C": {
+        "nonce_equality_validation": {
+          "result": "Pass"
+        },
+        "nonce_replay_rejection": {
+          "result": "Pass"
+        },
+        "iss_matches_discovery": {
+          "result": "Pass"
+        },
+        "aud_includes_client": {
+          "result": "Pass"
+        },
+        "alg_supported_by_discovery": {
+          "result": "Pass"
+        },
+        "kid_found_in_jwks": {
+          "result": "Pass"
+        }
+      }
+    },
+    "stats": {
+      "now_utc": "2025-10-23T15:18:55.309118+00:00",
+      "flow": "code",
+      "strict_code_nonce": true,
+      "req_nonce_len": 43,
+      "req_nonce_entropy_bits_per_char": 4.821613591911399,
+      "req_nonce_total_bits_est": 207.3,
+      "req_nonce_bits_method": "min(shannon,base64url)"
+    },
+    "policy": {
+      "strict_code_nonce": true,
+      "min_total_bits": 128
+    }
+  },
+  "key_rotation_check_result": {
+    "ok": true,
+    "failures": [],
+    "warnings": [],
+    "observed": {
+      "issuer": "https://happy.songsings.site/kc/realms/web-service",
+      "jwks_uri": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/certs",
+      "allowed_algs": [
+        "ES256",
+        "ES384",
+        "ES512",
+        "EdDSA",
+        "PS256",
+        "PS384",
+        "PS512",
+        "RS256",
+        "RS384",
+        "RS512"
+      ]
+    },
+    "checklist": {
+      "A": {
+        "jwks_uri_https": {
+          "result": "Pass",
+          "observed": {
+            "jwks_uri": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/certs"
+          }
+        },
+        "issuer_host_matches_jwks_uri": {
+          "result": "Pass",
+          "observed": {
+            "issuer": "https://happy.songsings.site/kc/realms/web-service",
+            "jwks_uri": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/certs"
+          }
+        },
+        "jwks_has_keys": {
+          "result": "Pass",
+          "observed": {
+            "keys_count": 2
+          }
+        },
+        "jwks_duplicate_kid": {
+          "result": "Pass",
+          "observed": {
+            "dupe_kids": {}
+          }
+        },
+        "jwks_use_keyops": {
+          "result": "Pass",
+          "observed": {
+            "use_missing_kids": []
+          }
+        },
+        "no_external_header_refs": {
+          "result": "Pass",
+          "observed": {
+            "external_header_fields": {}
+          }
+        }
+      },
+      "B": {
+        "pin_issuer_jwks_uri": {
+          "result": "Pass",
+          "observed": {
+            "issuer": "https://happy.songsings.site/kc/realms/web-service",
+            "jwks_uri": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/certs"
+          }
+        },
+        "alg_whitelist_id_token": {
+          "result": "Pass",
+          "observed": {
+            "alg": "RS256"
+          }
+        },
+        "alg_whitelist_access_token": {
+          "result": "Pass",
+          "observed": {
+            "alg": "RS256"
+          }
+        },
+        "alg_whitelist_client_assertion": {
+          "result": "N/A",
+          "observed": null
+        },
+        "kid_present_id_token": {
+          "result": "Pass"
+        },
+        "kid_known_id_token": {
+          "result": "Pass"
+        },
+        "kid_use_sig_id_token": {
+          "result": "Pass"
+        },
+        "header_external_ref_id_token": {
+          "result": "Pass"
+        },
+        "kid_pattern_id_token": {
+          "result": "Pass"
+        },
+        "kid_present_access_token": {
+          "result": "Pass"
+        },
+        "kid_known_access_token": {
+          "result": "Pass"
+        },
+        "kid_use_sig_access_token": {
+          "result": "Pass"
+        },
+        "header_external_ref_access_token": {
+          "result": "Pass"
+        },
+        "kid_pattern_access_token": {
+          "result": "Pass"
+        },
+        "kid_present_client_assertion": {
+          "result": "N/A"
+        },
+        "registration_jwks_vs_jwks_uri": {
+          "result": "N/A"
+        }
+      },
+      "C": {
+        "inject_unknown_kid": {
+          "result": "Advisory",
+          "note": "동작 테스트는 동적 환경 필요. 모듈은 unknown kid를 Fail로 판정."
+        },
+        "header_injection_fields_seen": {
+          "result": "Pass",
+          "observed": {
+            "tokens_with_external_ref": []
+          }
+        },
+        "hs_rs_switch": {
+          "result": "Pass"
+        },
+        "kid_traversal": {
+          "result": "Pass"
+        }
+      }
+    }
+  },
+  "alg_check_result": {
+    "checklist": {
+      "A": {
+        "access_token_typ_atjwt": {
+          "result": "Pass"
+        },
+        "alg_none_forbidden": {
+          "result": "Pass"
+        },
+        "alg_pinned_allowlist": {
+          "observed": [
+            [
+              "found",
+              "HS512"
+            ],
+            [
+              "found",
+              "HS512"
+            ],
+            [
+              "found",
+              "RS256"
+            ],
+            [
+              "found",
+              "RS256"
+            ]
+          ],
+          "result": "Fail"
+        },
+        "hs_usage_and_mixing": {
+          "result": "Advisory"
+        }
+      },
+      "B": {
+        "header_key_references": {
+          "result": "Pass"
+        },
+        "jwks_content_check": {
+          "result": "Fail"
+        },
+        "jwks_uri_https": {
+          "observed": {
+            "jwks_uri": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/certs"
+          },
+          "result": "Pass"
+        }
+      },
+      "C": {
+        "crit_header_handling": {
+          "result": "Pass"
+        },
+        "issuer_algorithm_mixing": {
+          "result": "Advisory"
+        }
+      }
+    },
+    "failures": [
+      {
+        "code": "A2",
+        "detail": "허용 목록 밖 alg 'HS512'. 허용=['ES256', 'PS256', 'RS256']",
+        "evidence": {
+          "alg": "HS512",
+          "token_kind": "found"
+        },
+        "title": "alg not allowed (pinning violation)"
+      },
+      {
+        "code": "A2",
+        "detail": "허용 목록 밖 alg 'HS512'. 허용=['ES256', 'PS256', 'RS256']",
+        "evidence": {
+          "alg": "HS512",
+          "token_kind": "found"
+        },
+        "title": "alg not allowed (pinning violation)"
+      },
+      {
+        "code": "B7",
+        "detail": "재조회 후에도 없으면 검증기 fail-closed 권장.",
+        "evidence": {
+          "missing": [
+            "b9bf4e29-a821-4816-81ad-04bdfd7123d8",
+            "b9bf4e29-a821-4816-81ad-04bdfd7123d8"
+          ]
+        },
+        "title": "토큰 kid가 JWKS에 없음"
+      }
+    ],
+    "flow_type": "unknown",
+    "observed": {
+      "allowed_algs": [
+        "ES256",
+        "PS256",
+        "RS256"
+      ],
+      "discovery_present": true,
+      "flow_type": "unknown",
+      "jwks_present": true,
+      "tokens": [
+        {
+          "alg": "HS512",
+          "extra_headers": {},
+          "kid": "b9bf4e29-a821-4816-81ad-04bdfd7123d8",
+          "kind": "found",
+          "typ": "JWT"
+        },
+        {
+          "alg": "HS512",
+          "extra_headers": {},
+          "kid": "b9bf4e29-a821-4816-81ad-04bdfd7123d8",
+          "kind": "found",
+          "typ": "JWT"
+        },
+        {
+          "alg": "RS256",
+          "extra_headers": {},
+          "kid": "0T-gnXeKbsLJgXWpBj9TRba00ALG3jb1qeXjThbmf_Q",
+          "kind": "found",
+          "typ": "JWT"
+        },
+        {
+          "alg": "RS256",
+          "extra_headers": {},
+          "kid": "0T-gnXeKbsLJgXWpBj9TRba00ALG3jb1qeXjThbmf_Q",
+          "kind": "found",
+          "typ": "JWT"
+        }
+      ]
+    },
+    "ok": false,
+    "warnings": [
+      {
+        "code": "A5",
+        "detail": "동일 발행자 환경에서 HS ↔ RS/ES/PS 혼용은 구현 혼동 표면.",
+        "evidence": {
+          "alg": "HS512",
+          "token_kind": "found"
+        },
+        "title": "HS* 알고리즘 사용 관찰"
+      },
+      {
+        "code": "A5",
+        "detail": "동일 발행자 환경에서 HS ↔ RS/ES/PS 혼용은 구현 혼동 표면.",
+        "evidence": {
+          "alg": "HS512",
+          "token_kind": "found"
+        },
+        "title": "HS* 알고리즘 사용 관찰"
+      },
+      {
+        "code": "A6",
+        "detail": "관찰 집합: ['HS512', 'RS256']",
+        "evidence": {
+          "by_alg": {
+            "HS512": [
+              "found"
+            ],
+            "RS256": [
+              "found"
+            ]
+          }
+        },
+        "title": "알고리즘 혼용 관찰"
+      },
+      {
+        "code": "C2",
+        "detail": "단일 핀닝 권장.",
+        "evidence": {
+          "by_iss": {
+            "https://happy.songsings.site/kc/realms/web-service": [
+              "RS256",
+              "HS512"
+            ]
+          }
+        },
+        "title": "동일 발행자 내 알고리즘 혼용 관찰"
+      }
+    ]
+  }
+}
