@@ -2332,7 +2332,6 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         # 1️⃣ 기존 메인 로직 먼저 실행
-        main()
 
         # 2️⃣ main() 이후 자동 분석 실행
         from pathlib import Path
