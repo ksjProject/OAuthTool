@@ -1,0 +1,11 @@
+Run from the folder containing your session_token.json:
+  python adapter_to_key_checker.py "..\session_token.json" --outdir ".\out"
+
+Auto-load order:
+  - --discovery path (if given), else ./openid_configuration.json, else ./summary.json
+  - --jwks path (if given), else ./jwks.json, else session_json.jwks
+
+Outputs:
+  out/key_input_from_session.json
+  out/key_rotation_check_result.txt
+  out/key_rotation_check_result.json

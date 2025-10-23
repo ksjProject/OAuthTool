@@ -1,0 +1,23 @@
+===== REPORT =====
+
+Flow: code  Overall: ADVISORY
+
+== A. Authorization Request ==
+- flow_identify: Pass
+  • {'scope': 'openid profile email offline_access', 'response_type': 'code'}
+- nonce_used_in_codeflow: Pass
+- nonce_entropy_freshness: Pass
+
+== B. ID Token ==
+- id_token_must_include_nonce_if_requested: Pass
+
+== C. Client Validation ==
+- nonce_equality_validation: Pass
+- nonce_replay_rejection: Pass
+- iss_matches_discovery: Pass
+- aud_includes_client: Pass
+- alg_supported_by_discovery: Pass
+- kid_found_in_jwks: Pass
+
+Advisories:
+ - [A1] PKCE 미사용 추정

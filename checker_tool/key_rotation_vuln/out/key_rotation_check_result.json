@@ -1,0 +1,141 @@
+{
+  "ok": true,
+  "failures": [],
+  "warnings": [],
+  "observed": {
+    "issuer": "https://happy.songsings.site/kc/realms/web-service",
+    "jwks_uri": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/certs",
+    "allowed_algs": [
+      "ES256",
+      "ES384",
+      "ES512",
+      "EdDSA",
+      "PS256",
+      "PS384",
+      "PS512",
+      "RS256",
+      "RS384",
+      "RS512"
+    ]
+  },
+  "checklist": {
+    "A": {
+      "jwks_uri_https": {
+        "result": "Pass",
+        "observed": {
+          "jwks_uri": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/certs"
+        }
+      },
+      "issuer_host_matches_jwks_uri": {
+        "result": "Pass",
+        "observed": {
+          "issuer": "https://happy.songsings.site/kc/realms/web-service",
+          "jwks_uri": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/certs"
+        }
+      },
+      "jwks_has_keys": {
+        "result": "Pass",
+        "observed": {
+          "keys_count": 2
+        }
+      },
+      "jwks_duplicate_kid": {
+        "result": "Pass",
+        "observed": {
+          "dupe_kids": {}
+        }
+      },
+      "jwks_use_keyops": {
+        "result": "Pass",
+        "observed": {
+          "use_missing_kids": []
+        }
+      },
+      "no_external_header_refs": {
+        "result": "Pass",
+        "observed": {
+          "external_header_fields": {}
+        }
+      }
+    },
+    "B": {
+      "pin_issuer_jwks_uri": {
+        "result": "Pass",
+        "observed": {
+          "issuer": "https://happy.songsings.site/kc/realms/web-service",
+          "jwks_uri": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/certs"
+        }
+      },
+      "alg_whitelist_id_token": {
+        "result": "Pass",
+        "observed": {
+          "alg": "RS256"
+        }
+      },
+      "alg_whitelist_access_token": {
+        "result": "Pass",
+        "observed": {
+          "alg": "RS256"
+        }
+      },
+      "alg_whitelist_client_assertion": {
+        "result": "N/A",
+        "observed": null
+      },
+      "kid_present_id_token": {
+        "result": "Pass"
+      },
+      "kid_known_id_token": {
+        "result": "Pass"
+      },
+      "kid_use_sig_id_token": {
+        "result": "Pass"
+      },
+      "header_external_ref_id_token": {
+        "result": "Pass"
+      },
+      "kid_pattern_id_token": {
+        "result": "Pass"
+      },
+      "kid_present_access_token": {
+        "result": "Pass"
+      },
+      "kid_known_access_token": {
+        "result": "Pass"
+      },
+      "kid_use_sig_access_token": {
+        "result": "Pass"
+      },
+      "header_external_ref_access_token": {
+        "result": "Pass"
+      },
+      "kid_pattern_access_token": {
+        "result": "Pass"
+      },
+      "kid_present_client_assertion": {
+        "result": "N/A"
+      },
+      "registration_jwks_vs_jwks_uri": {
+        "result": "N/A"
+      }
+    },
+    "C": {
+      "inject_unknown_kid": {
+        "result": "Advisory",
+        "note": "동작 테스트는 동적 환경 필요. 모듈은 unknown kid를 Fail로 판정."
+      },
+      "header_injection_fields_seen": {
+        "result": "Pass",
+        "observed": {
+          "tokens_with_external_ref": []
+        }
+      },
+      "hs_rs_switch": {
+        "result": "Pass"
+      },
+      "kid_traversal": {
+        "result": "Pass"
+      }
+    }
+  }
+}

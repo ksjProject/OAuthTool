@@ -1,0 +1,391 @@
+{
+  "discovery": {
+    "issuer": "https://happy.songsings.site/kc/realms/web-service",
+    "authorization_endpoint": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/auth",
+    "token_endpoint": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/token",
+    "introspection_endpoint": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/token/introspect",
+    "userinfo_endpoint": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/userinfo",
+    "end_session_endpoint": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/logout",
+    "frontchannel_logout_session_supported": true,
+    "frontchannel_logout_supported": true,
+    "jwks_uri": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/certs",
+    "check_session_iframe": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/login-status-iframe.html",
+    "grant_types_supported": [
+      "authorization_code",
+      "client_credentials",
+      "implicit",
+      "password",
+      "refresh_token",
+      "urn:ietf:params:oauth:grant-type:device_code",
+      "urn:ietf:params:oauth:grant-type:token-exchange",
+      "urn:ietf:params:oauth:grant-type:uma-ticket",
+      "urn:openid:params:grant-type:ciba"
+    ],
+    "acr_values_supported": [
+      "0",
+      "1"
+    ],
+    "response_types_supported": [
+      "code",
+      "none",
+      "id_token",
+      "token",
+      "id_token token",
+      "code id_token",
+      "code token",
+      "code id_token token"
+    ],
+    "subject_types_supported": [
+      "public",
+      "pairwise"
+    ],
+    "prompt_values_supported": [
+      "none",
+      "login",
+      "consent",
+      "create"
+    ],
+    "id_token_signing_alg_values_supported": [
+      "PS384",
+      "RS384",
+      "EdDSA",
+      "ES384",
+      "HS256",
+      "HS512",
+      "ES256",
+      "RS256",
+      "HS384",
+      "ES512",
+      "PS256",
+      "PS512",
+      "RS512"
+    ],
+    "id_token_encryption_alg_values_supported": [
+      "ECDH-ES+A256KW",
+      "ECDH-ES+A192KW",
+      "ECDH-ES+A128KW",
+      "RSA-OAEP",
+      "RSA-OAEP-256",
+      "RSA1_5",
+      "ECDH-ES"
+    ],
+    "id_token_encryption_enc_values_supported": [
+      "A256GCM",
+      "A192GCM",
+      "A128GCM",
+      "A128CBC-HS256",
+      "A192CBC-HS384",
+      "A256CBC-HS512"
+    ],
+    "userinfo_signing_alg_values_supported": [
+      "PS384",
+      "RS384",
+      "EdDSA",
+      "ES384",
+      "HS256",
+      "HS512",
+      "ES256",
+      "RS256",
+      "HS384",
+      "ES512",
+      "PS256",
+      "PS512",
+      "RS512",
+      "none"
+    ],
+    "userinfo_encryption_alg_values_supported": [
+      "ECDH-ES+A256KW",
+      "ECDH-ES+A192KW",
+      "ECDH-ES+A128KW",
+      "RSA-OAEP",
+      "RSA-OAEP-256",
+      "RSA1_5",
+      "ECDH-ES"
+    ],
+    "userinfo_encryption_enc_values_supported": [
+      "A256GCM",
+      "A192GCM",
+      "A128GCM",
+      "A128CBC-HS256",
+      "A192CBC-HS384",
+      "A256CBC-HS512"
+    ],
+    "request_object_signing_alg_values_supported": [
+      "PS384",
+      "RS384",
+      "EdDSA",
+      "ES384",
+      "HS256",
+      "HS512",
+      "ES256",
+      "RS256",
+      "HS384",
+      "ES512",
+      "PS256",
+      "PS512",
+      "RS512",
+      "none"
+    ],
+    "request_object_encryption_alg_values_supported": [
+      "ECDH-ES+A256KW",
+      "ECDH-ES+A192KW",
+      "ECDH-ES+A128KW",
+      "RSA-OAEP",
+      "RSA-OAEP-256",
+      "RSA1_5",
+      "ECDH-ES"
+    ],
+    "request_object_encryption_enc_values_supported": [
+      "A256GCM",
+      "A192GCM",
+      "A128GCM",
+      "A128CBC-HS256",
+      "A192CBC-HS384",
+      "A256CBC-HS512"
+    ],
+    "response_modes_supported": [
+      "query",
+      "fragment",
+      "form_post",
+      "query.jwt",
+      "fragment.jwt",
+      "form_post.jwt",
+      "jwt"
+    ],
+    "registration_endpoint": "https://happy.songsings.site/kc/realms/web-service/clients-registrations/openid-connect",
+    "token_endpoint_auth_methods_supported": [
+      "private_key_jwt",
+      "client_secret_basic",
+      "client_secret_post",
+      "tls_client_auth",
+      "client_secret_jwt"
+    ],
+    "token_endpoint_auth_signing_alg_values_supported": [
+      "PS384",
+      "RS384",
+      "EdDSA",
+      "ES384",
+      "HS256",
+      "HS512",
+      "ES256",
+      "RS256",
+      "HS384",
+      "ES512",
+      "PS256",
+      "PS512",
+      "RS512"
+    ],
+    "introspection_endpoint_auth_methods_supported": [
+      "private_key_jwt",
+      "client_secret_basic",
+      "client_secret_post",
+      "tls_client_auth",
+      "client_secret_jwt"
+    ],
+    "introspection_endpoint_auth_signing_alg_values_supported": [
+      "PS384",
+      "RS384",
+      "EdDSA",
+      "ES384",
+      "HS256",
+      "HS512",
+      "ES256",
+      "RS256",
+      "HS384",
+      "ES512",
+      "PS256",
+      "PS512",
+      "RS512"
+    ],
+    "authorization_signing_alg_values_supported": [
+      "PS384",
+      "RS384",
+      "EdDSA",
+      "ES384",
+      "HS256",
+      "HS512",
+      "ES256",
+      "RS256",
+      "HS384",
+      "ES512",
+      "PS256",
+      "PS512",
+      "RS512"
+    ],
+    "authorization_encryption_alg_values_supported": [
+      "ECDH-ES+A256KW",
+      "ECDH-ES+A192KW",
+      "ECDH-ES+A128KW",
+      "RSA-OAEP",
+      "RSA-OAEP-256",
+      "RSA1_5",
+      "ECDH-ES"
+    ],
+    "authorization_encryption_enc_values_supported": [
+      "A256GCM",
+      "A192GCM",
+      "A128GCM",
+      "A128CBC-HS256",
+      "A192CBC-HS384",
+      "A256CBC-HS512"
+    ],
+    "claims_supported": [
+      "aud",
+      "sub",
+      "iss",
+      "auth_time",
+      "name",
+      "given_name",
+      "family_name",
+      "preferred_username",
+      "email",
+      "acr"
+    ],
+    "claim_types_supported": [
+      "normal"
+    ],
+    "claims_parameter_supported": true,
+    "scopes_supported": [
+      "openid",
+      "service_account",
+      "acr",
+      "email",
+      "organization",
+      "basic",
+      "address",
+      "web-origins",
+      "phone",
+      "microprofile-jwt",
+      "profile",
+      "roles",
+      "offline_access"
+    ],
+    "request_parameter_supported": true,
+    "request_uri_parameter_supported": true,
+    "require_request_uri_registration": true,
+    "code_challenge_methods_supported": [
+      "plain",
+      "S256"
+    ],
+    "tls_client_certificate_bound_access_tokens": true,
+    "revocation_endpoint": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/revoke",
+    "revocation_endpoint_auth_methods_supported": [
+      "private_key_jwt",
+      "client_secret_basic",
+      "client_secret_post",
+      "tls_client_auth",
+      "client_secret_jwt"
+    ],
+    "revocation_endpoint_auth_signing_alg_values_supported": [
+      "PS384",
+      "RS384",
+      "EdDSA",
+      "ES384",
+      "HS256",
+      "HS512",
+      "ES256",
+      "RS256",
+      "HS384",
+      "ES512",
+      "PS256",
+      "PS512",
+      "RS512"
+    ],
+    "backchannel_logout_supported": true,
+    "backchannel_logout_session_supported": true,
+    "device_authorization_endpoint": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/auth/device",
+    "backchannel_token_delivery_modes_supported": [
+      "poll",
+      "ping"
+    ],
+    "backchannel_authentication_endpoint": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/ext/ciba/auth",
+    "backchannel_authentication_request_signing_alg_values_supported": [
+      "PS384",
+      "RS384",
+      "EdDSA",
+      "ES384",
+      "ES256",
+      "RS256",
+      "ES512",
+      "PS256",
+      "PS512",
+      "RS512"
+    ],
+    "require_pushed_authorization_requests": false,
+    "pushed_authorization_request_endpoint": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/ext/par/request",
+    "mtls_endpoint_aliases": {
+      "token_endpoint": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/token",
+      "revocation_endpoint": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/revoke",
+      "introspection_endpoint": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/token/introspect",
+      "device_authorization_endpoint": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/auth/device",
+      "registration_endpoint": "https://happy.songsings.site/kc/realms/web-service/clients-registrations/openid-connect",
+      "userinfo_endpoint": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/userinfo",
+      "pushed_authorization_request_endpoint": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/ext/par/request",
+      "backchannel_authentication_endpoint": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/ext/ciba/auth"
+    },
+    "authorization_response_iss_parameter_supported": true,
+    "_jwks_cached": {
+      "keys": [
+        {
+          "kid": "Ww_n78sRZCAPTnb0JjMd3wfAZHdAZIIvKOG8nIiKptw",
+          "kty": "RSA",
+          "alg": "RSA-OAEP",
+          "use": "enc",
+          "x5c": [
+            "MIICpTCCAY0CBgGZejf16jANBgkqhkiG9w0BAQsFADAWMRQwEgYDVQQDDAt3ZWItc2VydmljZTAeFw0yNTA5MjQwNTMzMzFaFw0zNTA5MjQwNTM1MTFaMBYxFDASBgNVBAMMC3dlYi1zZXJ2aWNlMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApz+ElN3sru7cMVfpouA63XeS988oMqhgPR5IMtGKgYrFsYGXnge7tpKBbIE+3P1Wr6Lgm2B8Wr1vPnvreHOkdw8QXarOp38aqbhjGnBlW/4vCQ50ShnIUf+YwnfGJfZBSErMYXgqOV22OjB7eYpMRQxUUhwLhvaLzYqfCZjR62dm0gXxGGOAhPqzBbbsaPLLzmVRsstP4AFL1nC8nYVuzcQoWNWEhOClB9sOydbHAFjIdxZQ1kjuD/01Fg8z3Mf8hmNRjlLMTO3Q/L+LR0fMUWa2ZV5j8cMWLcgrzJJSre1Y25NvpQmGngcowf+ysdLRafKI5G5bTH4ybYlR1Xk1HwIDAQABMA0GCSqGSIb3DQEBCwUAA4IBAQCSSjfXQvP7JkU0RR6HgZWaCPJju6XbnORfth8np1dQ+4s1CHs95bxGD2UHaZ4vUfh/sbjvZDuQGNewexJxmU54gGsFtd/Qdh/5SEX0Sez9b7VM7G1a1P5wHlH5bmwOlYDCMDKkJsHpMHliZNlMFLAwLt5BlD5BuOgvR3LTZU2j9aFqfoC0W5kJVt6m7WmwHaGP5eUFpaD5MBXL8NKnZMc7qQkj4Z6y8rhDM9guEG7P0ZjPuSeZmg4JNSikoX9azw/Wlm0MJ6ve5105q/tcZIwMrl2e65wdQg2jC+YyOHbGxaLL2+nASC9W/mPQulL/Y+wy+equKceiuxw000ObXeU2"
+          ],
+          "x5t": "2jNsLb0Hti__Oj34WaUgguF_13k",
+          "x5t#S256": "w195WbbkWKAJ8Nd2GPIN5BHCATttrBP0tuE8GcM8DZU",
+          "n": "pz-ElN3sru7cMVfpouA63XeS988oMqhgPR5IMtGKgYrFsYGXnge7tpKBbIE-3P1Wr6Lgm2B8Wr1vPnvreHOkdw8QXarOp38aqbhjGnBlW_4vCQ50ShnIUf-YwnfGJfZBSErMYXgqOV22OjB7eYpMRQxUUhwLhvaLzYqfCZjR62dm0gXxGGOAhPqzBbbsaPLLzmVRsstP4AFL1nC8nYVuzcQoWNWEhOClB9sOydbHAFjIdxZQ1kjuD_01Fg8z3Mf8hmNRjlLMTO3Q_L-LR0fMUWa2ZV5j8cMWLcgrzJJSre1Y25NvpQmGngcowf-ysdLRafKI5G5bTH4ybYlR1Xk1Hw",
+          "e": "AQAB"
+        },
+        {
+          "kid": "0T-gnXeKbsLJgXWpBj9TRba00ALG3jb1qeXjThbmf_Q",
+          "kty": "RSA",
+          "alg": "RS256",
+          "use": "sig",
+          "x5c": [
+            "MIICpTCCAY0CBgGZejf1mDANBgkqhkiG9w0BAQsFADAWMRQwEgYDVQQDDAt3ZWItc2VydmljZTAeFw0yNTA5MjQwNTMzMzFaFw0zNTA5MjQwNTM1MTFaMBYxFDASBgNVBAMMC3dlYi1zZXJ2aWNlMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAwgkFzUNaNqSFk6SSMsrRvPY3HaoabqVvDoeVJSKhLS6sm9UucxGaJ/Pn+yBDSm1eWwgkeGlnTDEkyEsaIpxy4Cf1YDZuTQ0cgNDwU1TJYt4wOfMTmxIIH9txfep4drxqQxFnLZalL6TEoSMOCR96nZ1JRgUPFtLoO0bz15lCPLA5XyOFSU1Vmc5HF49lSUP5A/s70kPCdqrY7CUfDJvJ/oUBw4a/L2XQjinYVJqKbspXM3+3CXOQ21ggzMwqWpaKqXvluHmd3V/6D7lM/36KZ1tDBSLbuxqLyEA/wScCGLid4u31xcsL/xfgBOnftvMSkXq515bZPFUTTODbUw++KQIDAQABMA0GCSqGSIb3DQEBCwUAA4IBAQBJcJmhpbkf1FoCm67E70M9KenlwKkc7rU5KPrTivFlU5fQezUCa1fz8GptFtphZPgmiT5GDhcQbieaQkZKF2pg9XTsw87oh4Xu4GLaxrNbVv0kf7vcPm0UrOzk/ubNdrkcmtiTpz912WDcVbLiPJVccFnTi8xRqYUu41pRtnC/Ptkawt2ahvCY7rQNoBYrNZuZA0DtoplhSGby6QpbfwhGXlnSTmuiywwdXTZWvjEkk4Z02jc5yYdaaHTQk44aLXhZ556KArNZzKlyAkGyQTacCPCjOia/BF0I0wDcITeCa1e652t9v5L3ITKGZlImtusBkI0H/PxdCo7gB9sCAxwg"
+          ],
+          "x5t": "rUX-pIN-VBWLUZopH2FFZTlStCI",
+          "x5t#S256": "xC0abrwmpB1Na3gbwJAB77lpKM80BKFFom_P4oGoh1M",
+          "n": "wgkFzUNaNqSFk6SSMsrRvPY3HaoabqVvDoeVJSKhLS6sm9UucxGaJ_Pn-yBDSm1eWwgkeGlnTDEkyEsaIpxy4Cf1YDZuTQ0cgNDwU1TJYt4wOfMTmxIIH9txfep4drxqQxFnLZalL6TEoSMOCR96nZ1JRgUPFtLoO0bz15lCPLA5XyOFSU1Vmc5HF49lSUP5A_s70kPCdqrY7CUfDJvJ_oUBw4a_L2XQjinYVJqKbspXM3-3CXOQ21ggzMwqWpaKqXvluHmd3V_6D7lM_36KZ1tDBSLbuxqLyEA_wScCGLid4u31xcsL_xfgBOnftvMSkXq515bZPFUTTODbUw--KQ",
+          "e": "AQAB"
+        }
+      ]
+    }
+  },
+  "authorization_request": {
+    "url": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/auth?client_id=200-django&response_type=code&scope=openid+profile+email+offline_access&redirect_uri=http%3A%2F%2Fksj15.ddns.net%2Fdjango%2Faccounts%2Foidc%2Fcallback%2F&state=8QAXwP9I0lyXEjJWB3UeCUlUvydEEMOrKCsfrNRzlvU&nonce=H3tMI9xLqSDPWpiTkUS6Ya--bYnKCsKukAi5piiA76I",
+    "params": {
+      "client_id": "200-django",
+      "response_type": "code",
+      "scope": "openid profile email offline_access",
+      "redirect_uri": "http://ksj15.ddns.net/django/accounts/oidc/callback/",
+      "state": "8QAXwP9I0lyXEjJWB3UeCUlUvydEEMOrKCsfrNRzlvU",
+      "nonce": "H3tMI9xLqSDPWpiTkUS6Ya--bYnKCsKukAi5piiA76I"
+    },
+    "ts": 1761232788
+  },
+  "authorization_response": {
+    "location": "http://ksj15.ddns.net/django/accounts/oidc/callback/?state=8QAXwP9I0lyXEjJWB3UeCUlUvydEEMOrKCsfrNRzlvU&session_state=d5d17a8d-ccab-4b25-86fa-3c7d0cdb99c1&iss=https%3A%2F%2Fhappy.songsings.site%2Fkc%2Frealms%2Fweb-service&code=44f6f282-4182-46b2-b930-f394f997e381.d5d17a8d-ccab-4b25-86fa-3c7d0cdb99c1.5cb442f6-10c8-4630-b248-0bb859b42688",
+    "params": {
+      "state": "8QAXwP9I0lyXEjJWB3UeCUlUvydEEMOrKCsfrNRzlvU",
+      "session_state": "d5d17a8d-ccab-4b25-86fa-3c7d0cdb99c1",
+      "iss": "https://happy.songsings.site/kc/realms/web-service",
+      "code": "44f6f282-4182-46b2-b930-f394f997e381.d5d17a8d-ccab-4b25-86fa-3c7d0cdb99c1.5cb442f6-10c8-4630-b248-0bb859b42688"
+    }
+  },
+  "callback_request": {},
+  "token_request": {},
+  "token_response": {
+    "json": {
+      "id_token": "eyJhbGciOiJSUzI1NiIsInR5cCIgOiAiSldUIiwia2lkIiA6ICIwVC1nblhlS2JzTEpnWFdwQmo5VFJiYTAwQUxHM2piMXFlWGpUaGJtZl9RIn0.eyJleHAiOjE3NjEwNjE3MTksImlhdCI6MTc2MTA1OTkxOSwiYXV0aF90aW1lIjoxNzYxMDU5OTE4LCJqdGkiOiJmM2E0ZjYxNy00ZWNkLTJmMjAtZTBmYi01OWVkZmIwMjdlNmIiLCJpc3MiOiJodHRwczovL2hhcHB5LnNvbmdzaW5ncy5zaXRlL2tjL3JlYWxtcy93ZWItc2VydmljZSIsImF1ZCI6IjIwMC1kamFuZ28iLCJzdWIiOiI1Nzg0ZDAzYS01M2QzLTQwODItOWQ1YS1mMGEwYjNlYzYxMDQiLCJ0eXAiOiJJRCIsImF6cCI6IjIwMC1kamFuZ28iLCJub25jZSI6IkgzdE1JOXhMcVNEUFdwaVRrVVM2WWEtLWJZbktDc0t1a0FpNXBpaUE3NkkiLCJzaWQiOiJkNWQxN2E4ZC1jY2FiLTRiMjUtODZmYS0zYzdkMGNkYjk5YzEiLCJhdF9oYXNoIjoiUkozRlc3dFZ3Sk9fZDB2RWJDUUhfZyIsImFjciI6IjEiLCJlbWFpbF92ZXJpZmllZCI6ZmFsc2UsIm5hbWUiOiJKZXNzaSBLaW0iLCJwcmVmZXJyZWRfdXNlcm5hbWUiOiJ0ZXN0IiwiZ2l2ZW5fbmFtZSI6Ikplc3NpIiwiZmFtaWx5X25hbWUiOiJLaW0iLCJlbWFpbCI6InRlc3RAZ21haWwuY29tIn0.JreFlpyBZ1CRuL6Oiw1NYp41py0cxmFqGbtRn72MSJgd6UeDSQy4QwAwHo7ho3bgF8isrGh8moAFt38jugzS5Wr9CjXRJfx0N-eDvll1woDaHnEnMcazkhR2gi_25NH8qDhQDsKIViQmOvqKfdauhyBui68bkE_rlEsXqWheam7ahnMy2zNR6j1YZB-cG_4kz8uRhZWeHj9ycjoR_x7S4TqHkjDqhFV55bb0Gp3MEVNfbzoiSWzmqTDmvStk8sTHoh1ssCOK9NbymLmY0JfmGkMfdC6ha01yYJybwx9iQgLuin01hhjlTcFD3ndKYhBVk7G8xbBktjgQufjVjBYVuw",
+      "access_token": "eyJhbGciOiJSUzI1NiIsInR5cCIgOiAiSldUIiwia2lkIiA6ICIwVC1nblhlS2JzTEpnWFdwQmo5VFJiYTAwQUxHM2piMXFlWGpUaGJtZl9RIn0.eyJleHAiOjE3NjEwNjE3MTksImlhdCI6MTc2MTA1OTkxOSwiYXV0aF90aW1lIjoxNzYxMDU5OTE4LCJqdGkiOiJvZnJ0YWM6MWQ0OTVjZDgtNDU3OS1iZGM1LTFlM2YtNWZlODUyYTQ0YjYzIiwiaXNzIjoiaHR0cHM6Ly9oYXBweS5zb25nc2luZ3Muc2l0ZS9rYy9yZWFsbXMvd2ViLXNlcnZpY2UiLCJhdWQiOiJhY2NvdW50Iiwic3ViIjoiNTc4NGQwM2EtNTNkMy00MDgyLTlkNWEtZjBhMGIzZWM2MTA0IiwidHlwIjoiQmVhcmVyIiwiYXpwIjoiMjAwLWRqYW5nbyIsInNpZCI6ImQ1ZDE3YThkLWNjYWItNGIyNS04NmZhLTNjN2QwY2RiOTljMSIsImFjciI6IjEiLCJhbGxvd2VkLW9yaWdpbnMiOlsiaHR0cDovL2tzajE1LmRkbnMubmV0Il0sInJlYWxtX2FjY2VzcyI6eyJyb2xlcyI6WyJkZWZhdWx0LXJvbGVzLXdlYi1zZXJ2aWNlIiwib2ZmbGluZV9hY2Nlc3MiLCJ1bWFfYXV0aG9yaXphdGlvbiJdfSwicmVzb3VyY2VfYWNjZXNzIjp7ImFjY291bnQiOnsicm9sZXMiOlsibWFuYWdlLWFjY291bnQiLCJtYW5hZ2UtYWNjb3VudC1saW5rcyIsInZpZXctcHJvZmlsZSJdfX0sInNjb3BlIjoib3BlbmlkIG9mZmxpbmVfYWNjZXNzIHByb2ZpbGUgZW1haWwiLCJlbWFpbF92ZXJpZmllZCI6ZmFsc2UsIm5hbWUiOiJKZXNzaSBLaW0iLCJwcmVmZXJyZWRfdXNlcm5hbWUiOiJ0ZXN0IiwiZ2l2ZW5fbmFtZSI6Ikplc3NpIiwiZmFtaWx5X25hbWUiOiJLaW0iLCJlbWFpbCI6InRlc3RAZ21haWwuY29tIn0.hpn_hKoSXTxR3S3HD2LRfKAmP2MkTHmpuluiTBb1sz-diOMPRud7Or-IFhxj8Zfkb8aEA88qAFksINdAGk2kXUkwHede2YaMmSxEV_B8t4NTzRTLCS88ckVjslsg5T4qwEZh1kXKCAd-ZN69zl4oxnka9zyd2nHREj8AtwB4fJTb8g7WTff1DP4yKjI9u8zOAISIa3n0E8MXh4AKqDqZG4pBOy4rID91x9qvQqDaQEpRS6NEEVTKxZcU34Oc8ZygGHOUMz762ixoiFzChXF5dlLs4ONb_lKqFcO-zFsbRZVaWWqADjAsCIQHTpkL7qD9Gb6ub8qCCmS4VQECHkzwZQ"
+    }
+  },
+  "refresh_token_response": {
+    "json": {}
+  },
+  "previous_nonces": []
+}

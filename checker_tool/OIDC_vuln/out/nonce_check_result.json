@@ -1,0 +1,65 @@
+{
+  "ok": false,
+  "label": "ADVISORY",
+  "flow_type": "code",
+  "issues": [
+    {
+      "code": "A1",
+      "level": "ADVISORY",
+      "title": "PKCE 미사용 추정",
+      "detail": "code_challenge_method가 없어 PKCE 미사용으로 추정됩니다."
+    }
+  ],
+  "checklist": {
+    "A": {
+      "flow_identify": {
+        "result": "Pass",
+        "observed": "{'scope': 'openid profile email offline_access', 'response_type': 'code'}"
+      },
+      "nonce_used_in_codeflow": {
+        "result": "Pass"
+      },
+      "nonce_entropy_freshness": {
+        "result": "Pass"
+      }
+    },
+    "B": {
+      "id_token_must_include_nonce_if_requested": {
+        "result": "Pass"
+      }
+    },
+    "C": {
+      "nonce_equality_validation": {
+        "result": "Pass"
+      },
+      "nonce_replay_rejection": {
+        "result": "Pass"
+      },
+      "iss_matches_discovery": {
+        "result": "Pass"
+      },
+      "aud_includes_client": {
+        "result": "Pass"
+      },
+      "alg_supported_by_discovery": {
+        "result": "Pass"
+      },
+      "kid_found_in_jwks": {
+        "result": "Pass"
+      }
+    }
+  },
+  "stats": {
+    "now_utc": "2025-10-23T15:18:55.309118+00:00",
+    "flow": "code",
+    "strict_code_nonce": true,
+    "req_nonce_len": 43,
+    "req_nonce_entropy_bits_per_char": 4.821613591911399,
+    "req_nonce_total_bits_est": 207.3,
+    "req_nonce_bits_method": "min(shannon,base64url)"
+  },
+  "policy": {
+    "strict_code_nonce": true,
+    "min_total_bits": 128
+  }
+}
