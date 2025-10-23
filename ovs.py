@@ -2331,7 +2331,24 @@ def main() -> None:
 
 if __name__ == "__main__":
     try:
+        # 1️⃣ 기존 메인 로직 먼저 실행
         main()
+        
+        # 2️⃣ main() 이후 자동 분석 실행
+        from pathlib import Path
+        from PGR.runner import run_analysis
+
+        # 🔹 분석 대상 파일 경로 지정 (원하면 browser_artifacts로 바꿔도 됨)
+        packets = Path("./proxy_artifacts/packets.jsonl")
+        session = Path("./proxy_artifacts/session_token.json")
+        out = Path("./reports")
+
+        print("\n[+] main() 실행 완료. 이제 run_analysis() 실행을 시작합니다...\n")
+        run_analysis(packets, session, out)
+
     except KeyboardInterrupt:
         print("[중단됨] 사용자에 의해 종료")
         sys.exit(130)
+    except Exception as e:
+        print(f"[오류] 실행 중 예외 발생: {e}")
+        sys.exit(1)
