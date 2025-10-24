@@ -42,6 +42,8 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Iterable
 from urllib.parse import urlsplit, parse_qsl, urlunsplit, quote, urlparse
+import importlib
+import importlib.util
 
 # --- ensure script directory is importable ---
 ### OVC_SYS_PATH_INSERTED ###
@@ -2266,9 +2268,11 @@ def run_discovery_fetch_from_artifacts() -> None:
     print("  - summary.json")
 
 
-# ====== (신규) 통합 모드 0 & 후처리 호출 유틸 ======
-def _latest_discovery_summary() -> tuple[Optional[dict], Optional[Path]]:
-    """discovery_artifacts 내 가장 최근 summary.json을 읽어 반환."""
+# ====== (신규) Mode 0 & Utilities (with CLI report_builder) ======
+from pathlib import Path
+import subprocess, json
+
+def _latest_discovery_summary():
     try:
         base = DISCOVERY_ARTIFACT_DIR
         if not base.exists():
@@ -2284,11 +2288,10 @@ def _latest_discovery_summary() -> tuple[Optional[dict], Optional[Path]]:
         pass
     return None, None
 
-def _infer_target_from_discovery(summary: Optional[dict]) -> str:
-    """요약에서 타겟명을 유추(issuer 호스트). 실패 시 기본값."""
-    if not summary:
+def _infer_target_from_discovery(summary):
+    if not summary or not isinstance(summary, dict):
         return "OVC-Target"
-    issuer = (summary.get("issuer_inferred") or "") if isinstance(summary, dict) else ""
+    issuer = summary.get("issuer_inferred") or ""
     try:
         from urllib.parse import urlsplit
         host = urlsplit(issuer).netloc or ""
@@ -2296,132 +2299,82 @@ def _infer_target_from_discovery(summary: Optional[dict]) -> str:
     except Exception:
         return "OVC-Target"
 
-def call_pgr_runner(packet_path: Path, session_path: Path, out_dir: Path) -> None:
-    """./PGR/runner.py 의 run_analysis(packet, session, out) 호출 (있으면)."""
+def call_moduleG_runner(packet_path: Path, session_path: Path, out_dir: Path) -> None:
+    """같은 경로 module_G/runner.py 의 run_analysis(packet:Path, session:Path, out:Path) 호출."""
     import sys, importlib, importlib.util
-    from pathlib import Path
-
     base_dir = Path(__file__).parent.resolve()
-    # 1차: 표준 패키지 임포트 시도
+    mod = None
+    # 1) 패키지 임포트
     try:
-        mod = importlib.import_module("PGR.runner")
+        mod = importlib.import_module("module_G.runner")
     except ModuleNotFoundError:
-        # 2차: 파일 경로 기반 임포트 (fallback)
-        runner_py = base_dir / "PGR" / "runner.py"
+        # 2) 파일 경로 임포트
+        runner_py = base_dir / "module_G" / "runner.py"
         if runner_py.exists():
-            spec = importlib.util.spec_from_file_location("PGR_runner_fallback", str(runner_py))
+            spec = importlib.util.spec_from_file_location("module_G_runner_fallback", str(runner_py))
             if spec and spec.loader:
                 mod = importlib.util.module_from_spec(spec)
-                sys.modules["PGR_runner_fallback"] = mod
+                sys.modules["module_G_runner_fallback"] = mod
                 spec.loader.exec_module(mod)
             else:
-                print(f"[PGR] spec/load 실패: {runner_py}")
+                print(f"[Runner] spec/load 실패: {runner_py}")
                 return
         else:
-            print("[PGR] './PGR/runner.py'를 찾지 못했습니다.")
+            print("[Runner] './module_G/runner.py'를 찾지 못했습니다.")
             return
     except Exception as e:
-        print(f"[PGR] 임포트 오류: {e}")
+        print(f"[Runner] module_G.runner 임포트 오류: {e}")
         return
 
     fn = getattr(mod, "run_analysis", None)
     if callable(fn):
         out_dir.mkdir(parents=True, exist_ok=True)
-        print(f"[PGR] run_analysis 호출 → packet={packet_path}, session={session_path}, out={out_dir}")
+        print(f"[Runner] run_analysis 호출 → packet={packet_path}, session={session_path}, out={out_dir}")
         try:
-            fn(str(packet_path), str(session_path), str(out_dir))
-            print("[PGR] run_analysis 완료.")
+            fn(packet_path, session_path, out_dir)  # Path 그대로 전달
+            print("[Runner] run_analysis 완료.")
         except Exception as e:
-            print(f"[PGR] 실행 중 예외: {e}")
+            print(f"[Runner] 실행 중 예외: {e}")
     else:
-        print("[PGR] 'run_analysis(packet, session, out)' 함수가 없어 건너뜁니다.")
+        print("[Runner] 'run_analysis(packet, session, out)' 함수가 없어 건너뜁니다.")
 
-def call_jongcheol_module(packet_path: Path, session_path: Path, out_root: Path) -> None:
-    """
-    (종철님 진단 모듈) 호출 자리.
-    규약 제안: 모듈은 아래 경로/이름 중 하나로 'run(packet, session, out_dir)' 함수를 제공.
-      • PGR.jc_runner
-      • jc_runner
-      • PGR.jongcheol
-      • jongcheol_runner
-    발견 시 out_dir= <out_root>/JongCheol 로 생성해 실행.
-    """
-    candidates = ["PGR.jc_runner", "jc_runner", "PGR.jongcheol", "jongcheol_runner"]
-    import importlib, importlib.util, sys
-    from pathlib import Path
-    base_dir = Path(__file__).parent.resolve()
-
-    for name in candidates:
+def _run_external_commands_for_checks() -> None:
+    """요청된 4개 절대 경로 명령을 순차 실행(누락 없이). 실패해도 나머지는 계속."""
+    cmds = [
+        ["python", r"C:/Users/USER/Desktop/OAuthTool/checker_tool\alg_vuln\adapter_to_key_checker.py",
+                  r"C:/Users/USER/Desktop/OAuthTool/checker_tool\session_token.json",
+                  "--checker", r"C:/Users/USER/Desktop/OAuthTool/checker_tool\alg_vuln\vuln_alg_check.py",
+                  "--outdir", r"C:/Users/USER/Desktop/OAuthTool/checker_tool\alg_vuln\out",
+                  "--result-prefix", "alg_check_result"],
+        ["python", r"C:/Users/USER/Desktop/OAuthTool/checker_tool\key_rotation_vuln\adapter_to_key_checker.py",
+                  r"C:/Users/USER/Desktop/OAuthTool/checker_tool\session_token.json",
+                  "--checker", r"C:/Users/USER/Desktop/OAuthTool/checker_tool\key_rotation_vuln\vuln_key_rotation_checker.py",
+                  "--outdir", r"C:/Users/USER/Desktop/OAuthTool/checker_tool\key_rotation_vuln\out"],
+        ["python", r"C:/Users/USER/Desktop/OAuthTool/checker_tool\AuthCode_vuln\run_checker.py",
+                  r"C:/Users/USER/Desktop/OAuthTool/checker_tool\session_token.json",
+                  "--module", r"C:/Users/USER/Desktop/OAuthTool/checker_tool\AuthCode_vuln\auth_code_theft_checker.py"],
+        ["python", r"C:/Users/USER/Desktop/OAuthTool/checker_tool\OIDC_vuln\adapter_to_checker.py",
+                  r"C:/Users/USER/Desktop/OAuthTool/checker_tool\session_token.json",
+                  "--checker", r"C:/Users/USER/Desktop/OAuthTool/checker_tool\OIDC_vuln\oidc_nonce_checker.py",
+                  "--outdir", r"C:/Users/USER/Desktop/OAuthTool/checker_tool\OIDC_vuln\out"],
+    ]
+    for i, cmd in enumerate(cmds, 1):
+        print(f"[Checks] ({i}/{len(cmds)}) 실행: {' '.join(cmd)}")
         try:
-            mod = importlib.import_module(name)
-            fn = getattr(mod, "run", None)
-            if callable(fn):
-                dst = out_root / "JongCheol"
-                dst.mkdir(parents=True, exist_ok=True)
-                print(f"[JC] {name}.run 호출 → packet={packet_path}, session={session_path}, out={dst}")
-                try:
-                    fn(str(packet_path), str(session_path), str(dst))
-                    print("[JC] 모듈 실행 완료.")
-                except TypeError:
-                    print(f"[JC] {name}.run 시그니처 불일치로 건너뜁니다.")
-                return
-        except ModuleNotFoundError:
-            # 파일 기반 폴백: ./<name>.py 도 시도 (예: ./jc_runner.py)
-            alt = name.split(".")[-1] + ".py"
-            alt_path = base_dir / alt
-            if alt_path.exists():
-                try:
-                    spec = importlib.util.spec_from_file_location(f"{name}_fallback", str(alt_path))
-                    if spec and spec.loader:
-                        mod = importlib.util.module_from_spec(spec)
-                        sys.modules[f"{name}_fallback"] = mod
-                        spec.loader.exec_module(mod)
-                        fn = getattr(mod, "run", None)
-                        if callable(fn):
-                            dst = out_root / "JongCheol"
-                            dst.mkdir(parents=True, exist_ok=True)
-                            print(f"[JC] {alt} (경로 폴백) run 호출")
-                            fn(str(packet_path), str(session_path), str(dst))
-                            print("[JC] 모듈 실행 완료.")
-                            return
-                except Exception as e:
-                    print(f"[JC] 경로 폴백 임포트 오류: {e}")
-            continue
+            subprocess.run(cmd, check=False)
         except Exception as e:
-            print(f"[JC] {name} 실행 중 예외: {e}")
-            return
-    print("[JC] 호출 가능한 종철님 모듈을 찾지 못했습니다. 추후 파일만 추가하면 자동 인식됩니다.")
-
-def call_report_builder(project: str, target: str, modules_dir: Path, severity_dir: Path, out_dir: Path, open_browser: bool = True) -> None:
-    """같은 경로의 report_builder.generate_report(...) 호출(있으면)."""
-    try:
-        from report_builder import generate_report
-    except ModuleNotFoundError:
-        print("[Report] report_builder.py를 찾지 못했습니다. 보고서 생성 건너뜁니다.")
-        return
-    except Exception as e:
-        print(f"[Report] report_builder import 오류: {e}")
-        return
-    try:
-        modules_dir.mkdir(parents=True, exist_ok=True)
-        severity_dir.mkdir(parents=True, exist_ok=True)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        print(f"[Report] generate_report 호출 → project={project}, target={target}, modules_dir={modules_dir}, severity_dir={severity_dir}, out_dir={out_dir}")
-        generate_report(project, target, str(modules_dir), str(severity_dir), str(out_dir), open_browser=open_browser)
-        print("[Report] 보고서 생성 요청 완료.")
-    except Exception as e:
-        print(f"[Report] 보고서 생성 중 예외: {e}")
+            print(f"[Checks] 명령 실행 중 예외: {e}")
 
 def run_mode0_ovc() -> None:
     """
-    0) OAuch Vulnerability Checker
+    0) OAuth Vulnerability Checker
        - 1) Proxy Capture 수행
-       - 5) Discovery Fetch 자동 수행
-       - ./PGR/runner.py run_analysis(packet, session, out) 호출
-       - (종철님 모듈) 호출
-       - report_builder.generate_report(...) 호출
+       - 5) Discovery Fetch 수행
+       - 지정된 py 코드 4종 실행(절대 경로)
+       - module_G/runner.py run_analysis(packet:Path, session:Path, out:Path) 호출
+       - 마지막에: python report_builder.py --target <URL>
     """
-    print("\\n[0] OAuch Vulnerability Checker (자동 실행)")
+    print("\n[0] OAuth Vulnerability Checker (자동 실행)")
     # --- 1) Proxy Capture 입력 ---
     listen_host = input("프록시 바인딩 호스트 [기본 0.0.0.0]: ").strip() or "0.0.0.0"
     try:
@@ -2430,10 +2383,11 @@ def run_mode0_ovc() -> None:
         print("잘못된 포트 값입니다. 18080으로 진행합니다.")
         listen_port = 18080
     ssl_insecure = ask_yes_no("서버 인증서 검증을 생략하시겠습니까?", default=False)
+
+    # ❶ URL 먼저 받고, ❷ 열지 여부 질문
+    login_url_input = input("진단 대상 로그인 페이지 URL (예: https://example.com/login): ").strip()
     open_login = ask_yes_no("로그인 페이지를 브라우저로 열까요?", default=True)
-    login_url = None
-    if open_login:
-        login_url = input("로그인 페이지 URL (예: example.com/login): ").strip() or None
+    login_url = login_url_input if (open_login and login_url_input) else None
 
     # --- 1) 실행 (CA 원복 질문은 생략하여 자동 진행) ---
     run_proxy_capture(listen_host, listen_port, ssl_insecure, login_url, suppress_untrust_prompt=True, auto_setup_during_capture=False)
@@ -2442,33 +2396,32 @@ def run_mode0_ovc() -> None:
     run_discovery_fetch_from_artifacts()
     summary, _ = _latest_discovery_summary()
 
-    # --- 분석 모듈 출력 경로 ---
-    modules_root = Path("./module_reports").resolve()
-    pgr_out = modules_root / "PGR"
-    jc_out_root = modules_root
+    # --- py 코드 4종 실행(절대 경로) ---
+    _run_external_commands_for_checks()
 
-    # --- PGR runner 호출 ---
+    # --- module_G runner 호출 (Path 인자) ---
     pkt = PROXY_ARTIFACT_DIR / "packets.jsonl"
     ses = PROXY_ARTIFACT_DIR / "session_token.json"
     if not pkt.exists() and (BROWSER_ARTIFACT_DIR / "packets.jsonl").exists():
         pkt = BROWSER_ARTIFACT_DIR / "packets.jsonl"
     if not ses.exists() and (BROWSER_ARTIFACT_DIR / "session_token.json").exists():
         ses = BROWSER_ARTIFACT_DIR / "session_token.json"
+
+    out_dir = Path("./module_reports/module_G").resolve()
     if pkt.exists() and ses.exists():
-        call_pgr_runner(pkt, ses, pgr_out)
-        call_jongcheol_module(pkt, ses, jc_out_root)
+        call_moduleG_runner(pkt, ses, out_dir)
     else:
-        print("[경고] packets.jsonl 혹은 session_token.json을 찾지 못해 외부 모듈 호출을 건너뜁니다.")
+        print("[경고] packets.jsonl 혹은 session_token.json을 찾지 못해 module_G runner 호출을 건너뜁니다.")
 
-    # --- Report Builder 호출 ---
-    project = "OAuth Vulnerability Checker"
-    target = _infer_target_from_discovery(summary)
-    severity_dir = Path("./severity").resolve()
-    reports_dir = Path("./reports").resolve()
-    call_report_builder(project, target, modules_root, severity_dir, reports_dir, open_browser=True)
+    # --- 마지막: report_builder.py CLI 실행 ---
+    report_target = login_url_input or _infer_target_from_discovery(summary)
+    try:
+        subprocess.run(["python", "report_builder.py", "--target", report_target], check=False)
+        print("[Report] report_builder.py 실행 완료.")
+    except Exception as e:
+        print(f"[Report] 실행 중 예외: {e}")
 
-    print("\\n[완료] 0) OAuch Vulnerability Checker 파이프라인을 마쳤습니다.")
-    print(" - 필요 시 4) Proxy Setup Revert 로 OS/환경을 원복하세요.")
+    print("\n[완료] 0) OAuth Vulnerability Checker 파이프라인을 마쳤습니다.")
 
 # ====== OS 선택 & 메인 ======
 def choose_os() -> str:
@@ -2490,7 +2443,7 @@ def main() -> None:
     SELECTED_OS = choose_os()
     print("\n=== OAuth Vulnerability Checker (OVC) ===")
     print("산출물 폴더: Proxy=./proxy_artifacts, Browser=./browser_artifacts, Discovery=./discovery_artifacts")
-    print("모드 선택: 0) OAuch Vulnerability Checker(기본)  1) Proxy Capture  2) Browser Session Capture  3) Proxy Setup Assistant  4) Proxy Setup Revert  5) Discovery Fetch  q) 종료")
+    print("모드 선택: 0) OAuth Vulnerability Checker(기본)  1) Proxy Capture  2) Browser Session Capture  3) Proxy Setup Assistant  4) Proxy Setup Revert  5) Discovery Fetch  q) 종료")
 
     choice = input("선택 입력 [0/1/2/3/4/5/q] (엔터=0): ").strip().lower()
     if choice in ("q", "quit"):
@@ -2555,3 +2508,62 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("[중단됨] 사용자에 의해 종료")
         sys.exit(130)
+
+
+def run_mode0_ovc() -> None:
+    """
+    0) OAuth Vulnerability Checker
+       - Proxy Capture → Discovery Fetch → 지정 명령 4개 → module_G runner → move.py → report_builder.py --target <URL>
+    """
+    print("\n[0] OAuth Vulnerability Checker (자동 실행)")
+    listen_host = input("프록시 바인딩 호스트 [기본 0.0.0.0]: ").strip() or "0.0.0.0"
+    try:
+        listen_port = int(input("프록시 포트 [기본 18080]: ").strip() or "18080")
+    except ValueError:
+        print("잘못된 포트 값입니다. 18080으로 진행합니다.")
+        listen_port = 18080
+    ssl_insecure = ask_yes_no("서버 인증서 검증을 생략하시겠습니까?", default=False)
+
+    # URL 먼저, 그 다음 열지 여부
+    login_url_input = input("진단 대상 로그인 페이지 URL (예: https://example.com/login): ").strip()
+    open_login = ask_yes_no("로그인 페이지를 브라우저로 열까요?", default=True)
+    login_url = login_url_input if (open_login and login_url_input) else None
+
+    # 1) Capture
+    run_proxy_capture(listen_host, listen_port, ssl_insecure, login_url, suppress_untrust_prompt=True, auto_setup_during_capture=False)
+
+    # 5) Discovery
+    run_discovery_fetch_from_artifacts()
+    summary, _ = _latest_discovery_summary()
+
+    # 3) External commands
+    _run_external_commands_for_checks()
+
+    # 4) module_G runner
+    pkt = PROXY_ARTIFACT_DIR / "packets.jsonl"
+    ses = PROXY_ARTIFACT_DIR / "session_token.json"
+    if not pkt.exists() and (BROWSER_ARTIFACT_DIR / "packets.jsonl").exists():
+        pkt = BROWSER_ARTIFACT_DIR / "packets.jsonl"
+    if not ses.exists() and (BROWSER_ARTIFACT_DIR / "session_token.json").exists():
+        ses = BROWSER_ARTIFACT_DIR / "session_token.json"
+    out_dir = Path("./module_reports/module_G").resolve()
+    if pkt.exists() and ses.exists():
+        call_moduleG_runner(pkt, ses, out_dir)
+    else:
+        print("[경고] packets.jsonl 혹은 session_token.json을 찾지 못해 module_G runner 호출을 건너뜁니다.")
+
+    # 5) move.py → report_builder.py
+    report_target = login_url_input or _infer_target_from_discovery(summary)
+    try:
+        subprocess.run(["python", "move.py"], check=False)
+        print("[Move] move.py 실행 완료.")
+    except Exception as e:
+        print(f"[Move] 실행 중 예외: {e}")
+    try:
+        subprocess.run(["python", "report_builder.py", "--target", report_target], check=False)
+        print("[Report] report_builder.py 실행 완료.")
+    except Exception as e:
+        print(f"[Report] 실행 중 예외: {e}")
+
+    print("\n[완료] 0) OAuth Vulnerability Checker 파이프라인을 마쳤습니다.")
+

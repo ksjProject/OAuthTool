@@ -1,0 +1,438 @@
+<!doctype html>
+<html lang="ko"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>OAuth Vulnerability Checker - 최종 보고서</title>
+<style>
+:root{ --bg:#0b0c10; --panel:#12131a; --panel-2:#161823; --text:#e7e9ee; --muted:#a7adbd; --border:#2a2f3a; --accent:#6ea8fe; --pass:#22c55e; --fail:#ef4444; --na:#9aa4b2; --high:#ef4444; --mid:#f59e0b; --low:#22c55e; --chip-bg:#1c1f2b; }
+@media (prefers-color-scheme: light){ :root{ --bg:#f7f8fa; --panel:#fff; --panel-2:#f3f4f7; --text:#0b0c10; --muted:#556070; --border:#e3e6ee; --chip-bg:#eef2ff; } }
+*{ box-sizing:border-box; }
+html,body{ margin:0; padding:0; background:var(--bg); color:var(--text); font-family: system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,Helvetica Neue,Arial; }
+header{ position:sticky; top:0; z-index:10; backdrop-filter: blur(6px); background: color-mix(in oklab, var(--bg), transparent 35%); border-bottom:1px solid var(--border);}
+.container{ max-width:1100px; margin:0 auto; padding:20px; }
+.topbar{ display:flex; align-items:center; justify-content:space-between; gap:16px; padding:10px 0; }
+.brand{ display:flex; gap:12px; align-items:center; font-weight:800; letter-spacing:.2px; }
+.logo{ width:28px; height:28px; border-radius:8px; display:inline-grid; place-items:center; background:linear-gradient(135deg, var(--accent), #a78bfa); color:white; font-size:16px; }
+.actions button{ background: var(--panel); color:var(--text); border:1px solid var(--border); padding:8px 12px; border-radius:10px; cursor:pointer; font-weight:600; }
+
+.grid{ display:grid; gap:16px; grid-template-columns: 1.2fr .8fr; }
+.card{ background:var(--panel); border:1px solid var(--border); border-radius:16px; padding:16px; }
+
+.muted{ color:var(--muted); font-size:.95rem; }
+.kv{ display:grid; grid-template-columns: 160px 1fr; gap:10px 14px; }
+
+.pill{ display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; background:var(--chip-bg); border:1px solid var(--border); }
+.dot{ width:10px; height:10px; border-radius:50%; display:inline-block; }
+.dot.pass{ background:var(--pass); } .dot.fail{ background:var(--fail); } .dot.na{ background:var(--na); }
+
+.sev{ font-weight:700; padding:2px 8px; border-radius:8px; border:1px solid var(--border); }
+.sev.high{ color:var(--high);} .sev.mid{ color:var(--mid);} .sev.low{ color:var(--low);}
+
+/* 표 & 텍스트 넘침 방지 */
+.table{ width:100%; border-collapse: collapse; table-layout: fixed; }
+.table th,.table td{ border-bottom:1px solid var(--border); padding:10px 8px; text-align:left; vertical-align: top; }
+.table th,.table td{ word-break: break-word; overflow-wrap:anywhere; }
+.table th{ font-size:.9rem; color:var(--muted); font-weight:700; }
+.row-badge{ display:inline-flex; align-items:center; gap:8px; max-width:100%; }
+.row-badge .nowrap{ overflow-wrap:anywhere; word-break: break-word; }
+.tag{ font-size:.8rem; color:var(--muted); border:1px solid var(--border); border-radius:8px; padding:2px 6px; white-space:nowrap; }
+
+.summary{ display:grid; grid-template-columns: repeat(4,1fr); gap:12px; }
+.kpi{ background:var(--panel-2); border:1px solid var(--border); border-radius:14px; padding:12px; display:flex; flex-direction:column; gap:4px; }
+.kpi .num{ font-size:1.6rem; font-weight:800; }
+.bar{ height:10px; background:var(--panel); border:1px solid var(--border); border-radius:999px; overflow:hidden; }
+.bar > div{ height:100%; background: linear-gradient(90deg, var(--fail), #f97316, var(--pass)); width:77.8%; }
+
+.finding{ border:1px solid var(--border); border-radius:14px; padding:14px; background:var(--panel); }
+.finding + .finding{ margin-top:12px; }
+.meta{ display:flex; gap:10px; flex-wrap:wrap; }
+.evidence{ background:var(--panel-2); border:1px solid var(--border); border-radius:12px; padding:10px;
+           white-space:pre-wrap; overflow-wrap:anywhere; word-break: break-word;
+           font-family: ui-monospace, Menlo, Consolas, "Liberation Mono", monospace; font-size:.85rem; }
+.wrap{ overflow-wrap:anywhere; word-break: break-word; }
+
+.foot{ margin-top:20px; color:var(--muted); font-size:.9rem; }
+@media print{ header{ position:static; } .container{ padding:0; } .card,.finding{ break-inside: avoid; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="container topbar">
+    <div class="brand">
+      <div class="logo">🔍</div>
+      <div>OAuth Vulnerability Checker</div>
+    </div>
+    <div class="actions"><button onclick="window.print()">인쇄 / PDF 저장</button></div>
+  </div>
+</header>
+<main class="container">
+  <div class="grid">
+    <section class="card">
+      <h3>리포트 메타</h3>
+      <div class="kv" style="margin-top:10px;">
+        <div class="muted">프로젝트</div><div>KSJ OAuth 취약점 점검</div>
+        <div class="muted">대상(서비스/RP)</div><div>https://ksj15.ddns.net/django/</div>
+        <div class="muted">점검 일시</div><div>2025-10-24 10:49</div>
+      </div>
+    </section>
+    <section class="card">
+      <h3>요약</h3>
+      <div class="summary" style="margin-top:8px;">
+        <div class="kpi"><div class="muted">총 항목(집계)</div><div class="num">9</div></div>
+        <div class="kpi"><div class="muted">실패(Fail)</div><div class="num">2</div></div>
+        <div class="kpi"><div class="muted">통과(Pass)</div><div class="num">7</div></div>
+        <div class="kpi"><div class="muted">N/A</div><div class="num">41</div></div>
+      </div>
+      <div class="bar" style="margin-top:10px;"><div></div></div>
+      <div class="muted" style="margin-top:6px;">Pass 비율 (N/A 제외): 77.8%</div>
+    </section>
+  </div>
+  <section class="card" style="margin-top:16px;">
+    <h3>점검 결과 목록</h3>
+    <table class="table" style="margin-top:6px;">
+      <thead>
+        <tr>
+          <th style="width:52%;">Vulnerability (취약점)</th>
+          <th style="width:14%;">결과</th>
+          <th style="width:12%;">위험도</th>
+          <th>비고</th>
+        </tr>
+      </thead>
+      <tbody>
+        
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">URL에 클라이언트 시크릿 노출 여부 검사</span> <span class="tag">Client Secret Query</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev high">High</span></td>
+          <td class="wrap">client_secret이 URL 쿼리에 포함됨</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">Referer 헤더 내 클라이언트 시크릿 포함 여부 검사</span> <span class="tag">Client Secret Referer</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev high">High</span></td>
+          <td class="wrap">Referer로 client_secret 유출</td>
+        </tr>
+        <tr data-result="Fail">
+          <td><div class="row-badge"><span class="nowrap">클라이언트 시크릿 전송 시 https 사용 확인</span> <span class="tag">Token Body Secret</span></div></td>
+          <td><span class="pill"><span class="dot fail"></span> Fail</span></td>
+          <td><span class="sev high">High</span></td>
+          <td class="wrap">Token 요청에서 client_secret 전송 감지</td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">세션 및 토큰 내 클라이언트 시크릿 존재 검사</span> <span class="tag">Session token secret</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev high">High</span></td>
+          <td class="wrap">session_token.json에 client_secret 기록 감지</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">인가 요청 내 STATE 존재 확인</span> <span class="tag">State Missing</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev mid">Middle</span></td>
+          <td class="wrap">Authorization 요청에 state 누락</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">STATE 엔트로피 검증</span> <span class="tag">State Low Entropy</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev mid">Middle</span></td>
+          <td class="wrap">state 무작위성 부족</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">인가 요청시 STATE 재사용 가능 여부 검사</span> <span class="tag">State Reuse</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev high">High</span></td>
+          <td class="wrap">state 재사용 감지</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">콜백 STATE 누락 검사</span> <span class="tag">Callback State Missing</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev high">High</span></td>
+          <td class="wrap">콜백에 state 누락</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">콜백 STATE 불일치 검사</span> <span class="tag">Callback State Mismatch</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev high">High</span></td>
+          <td class="wrap">콜백 state 불일치(알 수 없음)</td>
+        </tr>
+        <tr data-result="Fail">
+          <td><div class="row-badge"><span class="nowrap">인가 요청 중 과도한 혹은 민감한 스코프 감지</span> <span class="tag">Risky Scope</span></div></td>
+          <td><span class="pill"><span class="dot fail"></span> Fail</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">과도한/민감한 scope 요청</td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">최소권한 원칙 준수 확인</span> <span class="tag">Least Privilege</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">https 사용 확인</span> <span class="tag">redirect_uri_safety</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev high">High</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">get 방식 사용 검사</span> <span class="tag">form_post_used</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev high">High</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">인가코드 응답에 iss 사용 확인</span> <span class="tag">iss_in_authorization_response</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev high">High</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">iss 값, discovery와 매치 확인</span> <span class="tag">state_presence</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev high">High</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">PKCE 의 S256 (이상) 사용 확인</span> <span class="tag">pkce_s256_in_request</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev high">High</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">PKCE 사용 시, 토큰 코드검증 여부 확인</span> <span class="tag">token_has_code_verifier</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev mid">Middle</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">프론트 채널 인가코드 노출 검사</span> <span class="tag">front_channel_leak_risk</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev high">High</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">referer 노출 검사</span> <span class="tag">referer_leak_risk</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev high">High</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">jar par 사용여부 검사</span> <span class="tag">jar_par_usage</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">nonce 존재 확인</span> <span class="tag">nonce_used_in_codeflow</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">nonce 엔트로피/신선도 검증</span> <span class="tag">nonce_entropy_freshness</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">요청에 nonce 존재 시, ID Token nonce 포함 확인</span> <span class="tag">id_token_must_include_nonce_if_requested</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">ID Token 의 iss, aud, exp 유효성 검사</span> <span class="tag">iss_aud_exp_valid</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">인가요청에 response_type=code 확인</span> <span class="tag">response_type_code</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">인가요청에 scope 존재 확인</span> <span class="tag">scope_presence</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">인가요청에 client_id 존재 확인</span> <span class="tag">client_id_presence</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">인가요청에 redirect_uri 존재 확인</span> <span class="tag">redirect_uri_presence</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">인가요청에 state 존재 확인</span> <span class="tag">state_presence</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">인가코드 응답의 code 파라미터 존재 확인</span> <span class="tag">code_presence</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">인가코드 응답이 HTTPS 로 전달 확인</span> <span class="tag">https_callback</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">인가코드 교환 시 grant_type=authorization_code 확인</span> <span class="tag">grant_type_auth_code</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">인가코드 교환 시 client_id 존재 확인</span> <span class="tag">token_client_id_presence</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">인가코드 교환 시 client_secret 존재 여부 검사</span> <span class="tag">token_client_secret_presence</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">인가코드 교환 시 redirect_uri 일치 확인</span> <span class="tag">token_redirect_match</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">인가코드 교환 시 code 정상성 검사</span> <span class="tag">token_code_valid</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">iss 값, discovery와 매치 확인</span> <span class="tag">iss_matches_discovery</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev high">High</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">aud 에 클라이언트가 포함되는지 확인</span> <span class="tag">aud_includes_client</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">alg 가 discovery 내 지원 알고리즘인지 확인</span> <span class="tag">alg_supported_by_discovery</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">kid 가 discovery JWKS 내 존재 확인</span> <span class="tag">kid_found_in_jwks</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">액세스토큰 내 KID, JWKS 키 일치 여부 확인</span> <span class="tag">kid_known_access_token</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev high">High</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">액세스토큰 KID 용도 검사</span> <span class="tag">kid_use_sig_access_token</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev mid">Middle</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">액세스토큰 헤더의 외부키 참조 금지 여부 확인</span> <span class="tag">header_external_ref_access_token</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev high">High</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">액세스토큰 KID 패턴 확인</span> <span class="tag">kid_pattern_access_token</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev high">High</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">RS 가 JWKS 캐시 TTL 관리 여부 확인</span> <span class="tag">rs_jwks_cache_ttl</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">RS 가 키 롤오버 전략 수립 여부 확인</span> <span class="tag">rs_key_rollover_plan</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">알려지지 않은 KID 주입 공격</span> <span class="tag">inject_unknown_kid</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev mid">Middle</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">헤더 인젝션 공격</span> <span class="tag">header_injection_fields_seen</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev mid">Middle</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">HS RS 변경 공격</span> <span class="tag">hs_rs_switch</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev mid">Middle</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">KID Traversal</span> <span class="tag">kid_traversal</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev mid">Middle</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+  <section class="card" style="margin-top:16px;">
+    <h3>세부 내역 (Fail만)</h3>
+    
+        <div class="finding">
+          <h4 class="wrap">클라이언트 시크릿 전송 시 https 사용 확인 <span class='tag'>Token Body Secret</span></h4>
+          <div class="meta">
+            <span class="pill">결과: <span class="pill"><span class="dot fail"></span> Fail</span></span>
+            <span class="pill">위험도: <span class="sev high">High</span></span>
+            <span class="pill">분류: Client Secret / Client Secret</span>
+          </div>
+          <p class="wrap">Token 요청에서 client_secret 전송 감지</p>
+          <div class="evidence">Token endpoint POST to https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/token
+body snippet: grant_type=authorization_code&amp;client_id=200-django&amp;client_secret=KiolOZrdVwr5nr7jHYgrYK8j81qYJVfo&amp;code=f28a3bfe-31af-46a6-b8f5-5ce5428fc3a7.9e3d730e-1f91-4c38-9924-8a629f9bf1da.5cb442f6-10c8-4630-b248-0bb859b42688&amp;redirect_uri=http%3A%2F%2Fksj15.ddns.net%2Fdjango%2Faccounts%2Foidc%2Fcallback%2F</div>
+          <div class='muted'>출처: oauth_report.json</div>
+        </div>
+        <div class="finding">
+          <h4 class="wrap">인가 요청 중 과도한 혹은 민감한 스코프 감지 <span class='tag'>Risky Scope</span></h4>
+          <div class="meta">
+            <span class="pill">결과: <span class="pill"><span class="dot fail"></span> Fail</span></span>
+            <span class="pill">위험도: <span class="sev low">Low</span></span>
+            <span class="pill">분류: Scope / Scope 처리</span>
+          </div>
+          <p class="wrap">과도한/민감한 scope 요청</p>
+          <div class="evidence">Request URL: https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/auth?client_id=200-django&amp;response_type=code&amp;scope=openid+profile+email+offline_access&amp;redirect_uri=http%3A%2F%2Fksj15.ddns.net%2Fdjango%2Faccounts%2Foidc%2Fcallback%2F&amp;state=-GpDdBR5PIuqGsruqYSCZ1P8VpbelN2wcwMasJ1WwQg&amp;nonce=UvfIT2o9VDfKh_yfIlvDrHg9RrfHRSLak64AYKU3kAc
+Risk tokens: email, offline_access, profile
+Risk categories: OFFLINE, PRIVACY</div>
+          <div class='muted'>출처: oauth_report.json</div>
+        </div>
+  </section>
+  <div class="foot">
+    <div>※ Pass 비율은 N/A를 제외한 항목(통과+실패) 기준으로 계산합니다.</div>
+  </div>
+</main>
+</body></html>

@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-OAuth Vulnerability Checker - 자동 스캔 보고서 생성기 (severity.txt 기반)
+OAuth Vulnerability Checker - 자동 스캔 보고서 생성기 (severity.txt 기반, 증거/비고 중복 제거)
 - severity.txt: 기본 ./severity/severity.txt (없으면 전체 High)
 - module_reports: ./module_reports (재귀 스캔)
 - 보고서: ./reports/OAuth_Report_YYYYMMDD_HHMMSS.html
 - 브라우저는 기본 자동 오픈
+- 대상 URL은 옵션으로 입력 (--target 또는 --target-url)
 """
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
-import json, re, webbrowser
+import json, re, webbrowser, argparse
 
 # ===== check.txt 기반 하드코딩 항목 (누락 없이) =====
 CHECK_ITEMS = [
@@ -80,6 +81,39 @@ CHECK_ITEMS = [
 ]
 
 # -----------------------
+# 공통 유틸 (중복 제거용)
+# -----------------------
+def _dedup_keep_order(seq, keyfunc=lambda x: x):
+    seen = set()
+    out = []
+    for x in seq:
+        k = keyfunc(x)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(x)
+    return out
+
+def _norm_text(s: str) -> str:
+    if s is None: return ""
+    s = str(s).replace("\r\n", "\n").strip()
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+def _norm_evidence(ev) -> str:
+    if ev is None: return ""
+    if isinstance(ev, (dict, list)):
+        try:
+            s = json.dumps(ev, ensure_ascii=False, sort_keys=True)
+        except Exception:
+            s = str(ev)
+    else:
+        s = str(ev)
+    s = s.replace("\r\n", "\n").strip()
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+# -----------------------
 # Severity (.txt) 로딩
 # -----------------------
 _SEV_CODE_MAP = {"HIGH":"High", "MID":"Middle", "LOW":"Low"}
@@ -90,7 +124,6 @@ def _read_text(path: Path) -> str:
             return path.read_text(encoding=enc)
         except Exception:
             continue
-    # 마지막 시도 (기본 인코딩)
     return path.read_text()
 
 def load_severity_from_txt(severity_file: Path | None) -> dict:
@@ -103,11 +136,10 @@ def load_severity_from_txt(severity_file: Path | None) -> dict:
     """
     default = defaultdict(lambda: "High")  # 파일 없으면 전부 High
     if not severity_file or not severity_file.exists():
-      return default
+        return default
 
     text = _read_text(severity_file)
     m = {}
-    # 줄 단위에서 'HIGH/MID/LOW ... ( ... )' 패턴만 파싱
     rx = re.compile(r'^\s*(HIGH|MID|LOW)\s+(.+?)\s*\(([^)]+)\)\s*$', re.IGNORECASE)
     for line in text.splitlines():
         line = line.strip()
@@ -119,8 +151,7 @@ def load_severity_from_txt(severity_file: Path | None) -> dict:
         sev_raw, title_ko, eng_key = mo.groups()
         sev = _SEV_CODE_MAP.get(sev_raw.upper(), "High")
         m[title_ko.strip()] = sev
-        # 필요하면 영어 키도 동일 세버리티로 사용 가능:
-        # m[eng_key.strip()] = sev
+        # 필요 시 영어 키도 동일 세버리티로: m[eng_key.strip()] = sev
     if not m:
         return default
     out = defaultdict(lambda: "Low")
@@ -132,7 +163,7 @@ def resolve_severity_file(user_supplied: str | Path | None) -> Path | None:
     우선순위:
     1) 사용자가 넘긴 severity.txt 경로
     2) ./severity/severity.txt
-    3) ./severity/ 하위 *.txt 중 가장 이름이 'severity'에 가까운 파일(severity*, *severity*.txt)
+    3) ./severity/ 하위 *.txt 중 'severity' 패턴 우선
     4) 없으면 None (→ 전체 High)
     """
     if user_supplied:
@@ -140,15 +171,12 @@ def resolve_severity_file(user_supplied: str | Path | None) -> Path | None:
         if p.exists():
             return p
 
-    # 2) 기본 경로
     p = Path("./severity/severity.txt")
     if p.exists():
         return p
 
-    # 3) fallback 검색
     sev_dir = Path("./severity")
     if sev_dir.exists():
-        # 우선순위 높은 패턴부터 탐색
         patterns = ["severity*.txt", "*severity*.txt", "*.txt"]
         for pat in patterns:
             for cand in sorted(sev_dir.rglob(pat)):
@@ -157,7 +185,7 @@ def resolve_severity_file(user_supplied: str | Path | None) -> Path | None:
     return None  # None이면 전체 High
 
 # -----------------------
-# 모듈 산출물 파싱
+# 모듈 산출물 파싱 (재귀형)
 # -----------------------
 def _norm_result(val: str) -> str:
     s = (val or "").strip().upper()
@@ -166,46 +194,85 @@ def _norm_result(val: str) -> str:
     return "N/A"
 
 def _extract_results(path: Path):
+    """
+    어디에 있든 다음 패턴을 모두 수집:
+      - groups.*.checks[]   → title/result/description/evidence
+      - (중첩 허용) checklist → 각 항목 result/note/observed/evidence
+      - (중첩 허용) failures/warnings/issues 배열 → code/title/detail/evidence
+    key 매핑:
+      - checks[].title (또는 id/key) → 예: "Client Secret Query"
+      - checklist.* 의 항목 키 → 예: "redirect_uri_safety"
+      - failures... → code 또는 title
+    """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
+
     results = defaultdict(list)
-    checklist = data.get("checklist")
-    if isinstance(checklist, dict):
-        def recurse(d):
-            for k, v in d.items():
-                if isinstance(v, dict) and "result" in v:
-                    results[k].append({
-                        "result": _norm_result(v.get("result")),
-                        "note": v.get("note",""),
-                        "observed": v.get("observed",""),
-                        "evidence": v.get("evidence"),
-                        "source": path.name
-                    })
-                elif isinstance(v, dict):
-                    recurse(v)
-        recurse(checklist)
-    for arr_key in ("failures","warnings","issues"):
-        arr = data.get(arr_key)
-        if isinstance(arr, list):
-            for it in arr:
-                code = it.get("code") or ""
-                title = it.get("title") or ""
-                key = code or re.sub(r"[^a-z0-9_]+", "_", (title or "").lower()).strip("_")
-                detail = it.get("detail","")
-                evidence = it.get("evidence")
-                results[key].append({
-                    "result": "Fail" if arr_key == "failures" else "N/A",
-                    "note": detail,
-                    "observed": None,
-                    "evidence": evidence,
-                    "source": path.name
-                })
+
+    def add(key, res, note=None, observed=None, evidence=None):
+        if not key:
+            return
+        results[key].append({
+            "result": _norm_result(res),
+            "note": note or "",
+            "observed": observed,
+            "evidence": evidence,
+            "source": path.name,
+        })
+
+    def walk(node):
+        if isinstance(node, dict):
+            # 1) groups.*.checks[] (oauth_report, combined_* 등)
+            grp = node.get("groups")
+            if isinstance(grp, dict):
+                for g in grp.values():
+                    checks = g.get("checks")
+                    if isinstance(checks, list):
+                        for c in checks:
+                            title = c.get("title") or c.get("id") or c.get("key")
+                            res = c.get("result")
+                            add(title, res, note=c.get("description") or c.get("detail"),
+                                evidence=c.get("evidence"))
+
+            # 2) checklist (중첩 허용: authcode_report, nonce_check_result, key_rotation_check_result 등)
+            cl = node.get("checklist")
+            if isinstance(cl, dict):
+                for cat in cl.values():  # "A","B","C" 같은 그룹
+                    if isinstance(cat, dict):
+                        for k, v in cat.items():  # k: "redirect_uri_safety" 등
+                            if isinstance(v, dict) and "result" in v:
+                                add(
+                                    k, v.get("result"),
+                                    note=v.get("note"),
+                                    observed=v.get("observed"),
+                                    evidence=v.get("evidence"),
+                                )
+
+            # 3) failures/warnings/issues (중첩 허용)
+            for arr_key in ("failures", "warnings", "issues"):
+                arr = node.get(arr_key)
+                if isinstance(arr, list):
+                    for it in arr:
+                        key = it.get("code") or it.get("title") or ""
+                        res = "Fail" if arr_key == "failures" else "N/A"
+                        add(key, res, note=it.get("detail"), evidence=it.get("evidence"))
+
+            # 4) 다른 자식도 재귀 탐색
+            for k, v in node.items():
+                if k not in ("groups", "checklist", "failures", "warnings", "issues"):
+                    walk(v)
+
+        elif isinstance(node, list):
+            for x in node:
+                walk(x)
+
+    walk(data)
     return results
 
 # -----------------------
-# HTML 빌드
+# HTML 빌드 (문자 넘침 방지 포함)
 # -----------------------
 def _build_html(rows, summary):
     def esc(s):
@@ -221,7 +288,7 @@ def _build_html(rows, summary):
 
     tr_html = []
     for r in rows:
-        vuln = f'<div class="row-badge"><span>{esc(r["title_ko"])}</span>'
+        vuln = f'<div class="row-badge"><span class="nowrap">{esc(r["title_ko"])}</span>'
         if r["key"]: vuln += f' <span class="tag">{esc(r["key"])}</span>'
         vuln += '</div>'
         note = esc(r["notes"]) if r["notes"] else '<span class="muted">—</span>'
@@ -230,7 +297,7 @@ def _build_html(rows, summary):
           <td>{vuln}</td>
           <td>{pill_result(r["result"])}</td>
           <td>{sev_badge(r["severity"])}</td>
-          <td>{note}</td>
+          <td class="wrap">{note}</td>
         </tr>""")
 
     card_html = []
@@ -245,13 +312,13 @@ def _build_html(rows, summary):
         src_html = ("<div class='muted'>출처: " + ", ".join(esc(s) for s in r["sources"]) + "</div>") if r["sources"] else ""
         card_html.append(f"""
         <div class="finding">
-          <h4>{esc(r["title_ko"])}{' ' + f"<span class='tag'>{esc(r['key'])}</span>" if r['key'] else ''}</h4>
+          <h4 class="wrap">{esc(r["title_ko"])}{' ' + f"<span class='tag'>{esc(r['key'])}</span>" if r['key'] else ''}</h4>
           <div class="meta">
             <span class="pill">결과: {pill_result(r["result"])}</span>
             <span class="pill">위험도: {sev_badge(r["severity"])}</span>
             <span class="pill">분류: {esc(r["section"])} / {esc(r["group"])}</span>
           </div>
-          {('<p>'+esc(r["notes"])+'</p>') if r["notes"] else ""}
+          {('<p class="wrap">'+esc(r["notes"])+'</p>') if r["notes"] else ""}
           {''.join(ev_parts)}
           {src_html}
         </div>""")
@@ -271,29 +338,43 @@ header{{ position:sticky; top:0; z-index:10; backdrop-filter: blur(6px); backgro
 .brand{{ display:flex; gap:12px; align-items:center; font-weight:800; letter-spacing:.2px; }}
 .logo{{ width:28px; height:28px; border-radius:8px; display:inline-grid; place-items:center; background:linear-gradient(135deg, var(--accent), #a78bfa); color:white; font-size:16px; }}
 .actions button{{ background: var(--panel); color:var(--text); border:1px solid var(--border); padding:8px 12px; border-radius:10px; cursor:pointer; font-weight:600; }}
+
 .grid{{ display:grid; gap:16px; grid-template-columns: 1.2fr .8fr; }}
 .card{{ background:var(--panel); border:1px solid var(--border); border-radius:16px; padding:16px; }}
+
 .muted{{ color:var(--muted); font-size:.95rem; }}
 .kv{{ display:grid; grid-template-columns: 160px 1fr; gap:10px 14px; }}
+
 .pill{{ display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; background:var(--chip-bg); border:1px solid var(--border); }}
 .dot{{ width:10px; height:10px; border-radius:50%; display:inline-block; }}
 .dot.pass{{ background:var(--pass); }} .dot.fail{{ background:var(--fail); }} .dot.na{{ background:var(--na); }}
+
 .sev{{ font-weight:700; padding:2px 8px; border-radius:8px; border:1px solid var(--border); }}
 .sev.high{{ color:var(--high);}} .sev.mid{{ color:var(--mid);}} .sev.low{{ color:var(--low);}}
-.table{{ width:100%; border-collapse: collapse; }}
-.table th,.table td{{ border-bottom:1px solid var(--border); padding:10px 8px; text-align:left; vertical-align: top;}}
+
+/* 표 & 텍스트 넘침 방지 */
+.table{{ width:100%; border-collapse: collapse; table-layout: fixed; }}
+.table th,.table td{{ border-bottom:1px solid var(--border); padding:10px 8px; text-align:left; vertical-align: top; }}
+.table th,.table td{{ word-break: break-word; overflow-wrap:anywhere; }}
 .table th{{ font-size:.9rem; color:var(--muted); font-weight:700; }}
-.row-badge{{ display:inline-flex; align-items:center; gap:8px; }}
-.tag{{ font-size:.8rem; color:var(--muted); border:1px solid var(--border); border-radius:8px; padding:2px 6px; }}
+.row-badge{{ display:inline-flex; align-items:center; gap:8px; max-width:100%; }}
+.row-badge .nowrap{{ overflow-wrap:anywhere; word-break: break-word; }}
+.tag{{ font-size:.8rem; color:var(--muted); border:1px solid var(--border); border-radius:8px; padding:2px 6px; white-space:nowrap; }}
+
 .summary{{ display:grid; grid-template-columns: repeat(4,1fr); gap:12px; }}
 .kpi{{ background:var(--panel-2); border:1px solid var(--border); border-radius:14px; padding:12px; display:flex; flex-direction:column; gap:4px; }}
 .kpi .num{{ font-size:1.6rem; font-weight:800; }}
 .bar{{ height:10px; background:var(--panel); border:1px solid var(--border); border-radius:999px; overflow:hidden; }}
 .bar > div{{ height:100%; background: linear-gradient(90deg, var(--fail), #f97316, var(--pass)); width:{summary['pct_pass']}%; }}
+
 .finding{{ border:1px solid var(--border); border-radius:14px; padding:14px; background:var(--panel); }}
 .finding + .finding{{ margin-top:12px; }}
 .meta{{ display:flex; gap:10px; flex-wrap:wrap; }}
-.evidence{{ background:var(--panel-2); border:1px solid var(--border); border-radius:12px; padding:10px; white-space:pre-wrap; font-family: ui-monospace, Menlo, Consolas, "Liberation Mono", monospace; font-size:.85rem; }}
+.evidence{{ background:var(--panel-2); border:1px solid var(--border); border-radius:12px; padding:10px;
+           white-space:pre-wrap; overflow-wrap:anywhere; word-break: break-word;
+           font-family: ui-monospace, Menlo, Consolas, "Liberation Mono", monospace; font-size:.85rem; }}
+.wrap{{ overflow-wrap:anywhere; word-break: break-word; }}
+
 .foot{{ margin-top:20px; color:var(--muted); font-size:.9rem; }}
 @media print{{ header{{ position:static; }} .container{{ padding:0; }} .card,.finding{{ break-inside: avoid; }} }}
 </style>
@@ -351,14 +432,13 @@ header{{ position:sticky; top:0; z-index:10; backdrop-filter: blur(6px); backgro
     {''.join(card_html) if card_html else '<div class="muted">Fail 항목이 없습니다.</div>'}
   </section>
   <div class="foot">
-    <div>※ 위험도는 기본 <b>High</b>로 표기되며, 같은 경로의 <code>severity.txt</code>가 존재하면 해당 기준으로 대체됩니다.</div>
     <div>※ Pass 비율은 N/A를 제외한 항목(통과+실패) 기준으로 계산합니다.</div>
   </div>
 </main>
 </body></html>"""
 
 # -----------------------
-# 집계 + 파일 출력 + 브라우저
+# 집계 + 파일 출력 + 브라우저 (중복 제거 적용)
 # -----------------------
 def _compute_rows_and_summary(modules_dir: Path, severity_map: dict, project: str, target: str):
     inputs = [p for p in modules_dir.rglob("*.json") if p.is_file()]
@@ -378,8 +458,15 @@ def _compute_rows_and_summary(modules_dir: Path, severity_map: dict, project: st
         if per_key:
             worst = max(per_key, key=lambda x: ORDER.get(x["result"],0))
             result = worst["result"]
-            notes = [x["note"] for x in per_key if x.get("note")]
-            evidences = [x["evidence"] for x in per_key if x.get("evidence") is not None]
+
+            # 비고/증거 중복 제거 (내용 기준)
+            notes_raw = [x.get("note","") for x in per_key if x.get("note")]
+            notes = _dedup_keep_order(notes_raw, keyfunc=_norm_text)
+
+            evid_raw = [x.get("evidence") for x in per_key if x.get("evidence") is not None]
+            evidences = _dedup_keep_order(evid_raw, keyfunc=_norm_evidence)
+
+            # 출처는 전체 합집합
             sources = sorted({x["source"] for x in per_key if x.get("source")})
         else:
             result = "N/A"; notes=[]; evidences=[]; sources=[]
@@ -440,6 +527,26 @@ def generate_report(
 
     return out_file, summary
 
-# 단독 실행 시에도 동일 동작
+# -----------------------
+# CLI 진입점: 대상 URL 옵션 추가
+# -----------------------
 if __name__ == "__main__":
-    generate_report()
+    ap = argparse.ArgumentParser(description="OAuth Vulnerability Checker - 보고서 생성기")
+    ap.add_argument("--project", default="KSJ OAuth 취약점 점검", help="프로젝트명")
+    ap.add_argument("--target", "--target-url", dest="target", default="https://example.com", help="대상(서비스/RP) URL")
+    ap.add_argument("--modules-dir", default="./module_reports", help="진단 모듈 산출물 JSON 폴더(재귀)")
+    ap.add_argument("--severity-file", default=None, help="severity.txt 경로 (기본: ./severity/severity.txt 자동 탐색)")
+    ap.add_argument("--out-dir", default="./reports", help="보고서 출력 폴더")
+    args = ap.parse_args()
+
+    out, summary = generate_report(
+        project=args.project,
+        target=args.target,
+        modules_dir=args.modules_dir,
+        severity_file=args.severity_file,
+        out_dir=args.out_dir,
+        open_browser=True  # 기본 자동 오픈
+    )
+    print("✔ 보고서 생성:", out)
+    print("   Target:", summary["target"])
+    print("   Pass:", summary["pass"], "Fail:", summary["fail"], "N/A:", summary["na"], "Pass%:", summary["pct_pass"])

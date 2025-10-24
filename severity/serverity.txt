@@ -1,0 +1,89 @@
+Client Secret
+	Client Secret
+HIGH		URL에 클라이언트 시크릿 노출 여부 검사 (Client Secret Query)
+HIGH		Referer 헤더 내 클라이언트 시크릿 포함 여부 검사 (Client Secret Referer)
+HIGH		클라이언트 시크릿 전송 시 https 사용 확인 (Token Body Secret)
+HIGH		세션 및 토큰 내 클라이언트 시크릿 존재 검사 (Session token secret)
+
+
+STATE
+	STATE
+MID		인가 요청 내 STATE 존재 확인 (State Missing)
+MID		STATE 엔트로피 검증 (State Low Entropy)
+HIGH		인가 요청시 STATE 재사용 가능 여부 검사 (State Reuse)
+HIGH		콜백 STATE 누락 검사 (Callback State Missing)
+HIGH		콜백 STATE 불일치 검사 (Callback State Mismatch)
+
+Scope
+	Scope 처리
+LOW		인가 요청 중 과도한 혹은 민감한 스코프 감지 (Risky Scope)
+
+Authorization  Code
+	Authorization Redirect
+HIGH		https 사용 확인 (redirect_uri_safety)
+HIGH		get 방식 사용 검사 (form_post_used)
+HIGH		인가코드 응답에 iss 사용 확인 (iss_in_authorization_response)
+HIGH		iss 값, discovery와 매치 확인 (state_presence)
+	PKCE & token binding
+HIGH		PKCE 의 S256 (이상) 사용 확인 (pkce_s256_in_request)
+MID		PKCE 사용 시, 토큰 코드검증 여부 확인 (token_has_code_verifier)
+	Leakage & hardening
+HIGH		프론트 채널 인가코드 노출 검사 (front_channel_leak_risk)
+HIGH		referer 노출 검사 (referer_leak_risk)
+LOW		jar par 사용여부 검사 (jar_par_usage)
+
+OIDC nonce
+	Authorization request
+HIGH		플로우 확인 (flow_identify)
+HIGH		nonce 사용 확인 (nonce_used_in_codeflow)
+LOW		nonce 엔트로피 검증 (nonce_entropy_freshness)
+	ID token
+HIGH		nonce 사용 확인 (id_token_must_include_nonce_if_requested)
+	Client Validation
+HIGH		nonce값 확인 및 검증 (nonce_equality_validation)
+HIGH		nonce 재사용 가능 여부 검사 (nonce_replay_rejection)
+
+alg
+	Algorithm & type
+HIGH		허용된 alg 고정여부 확인 (alg_pinned_allowlist)
+HIGH		alg none 거부 확인 (alg_none_forbidden)
+MID		access token 타입 atjwt 확인 (access_token_typ_atjwt)
+LOW		HS256 사용여부 검사 (hs_usage_and_mixing)
+	Key Source & Headers
+MID		헤더 키 노출 검사 (header_key_references)
+HIGH		디스커버리 문서 내 jwks_uri 의 HTTPS 확인 (jwks_uri_https)
+LOW		jwks 컨텐츠 검증 (jwks_content_check)
+	Policy & Binding
+MID		헤더 내 crit 값 검증 (crit_header_handling)
+HIGH		issuer 알고리즘 혼용 사용 검사 (issuer_algorithm_mixing)
+
+Key Rotation & JWKS
+	Authorization Server
+HIGH		https 확인 (jwks_uri_https)
+HIGH		issuer 호스트 매치 확인 (issuer_host_matches_jwks_uri)
+HIGH		키 존재 확인 (jwks_has_keys)
+HIGH		KID 중복 존재 검사 (jwks_duplicate_kid)
+MID		key_ops 사용 확인 (jwks_use_keyops)
+MID		header referer 추가존재 검사 (no_external_header_refs)
+	Resource Server
+HIGH		issuer의 고정된 jwks uri 신뢰 확인 (pin_issuer_jwks_uri)
+MID		ID토큰 alg 화이트리스트 확인 (alg_whitelist_id_token)
+MID		Acceess토큰 alg 화이트리스트 확인 (alg_whitelist_access_token)
+MID		클라이언트 어설션 사용시 alg 화이트리스트 확인 (alg_whitelist_client_assertion)
+HIGH		ID토큰 헤더 내 KID 존재 확인 (kid_present_id_token)
+HIGH		ID토큰 내 KID, JWKS 키 일치 여부 확인 (kid_known_id_token)
+MID		ID토큰 KID 용도 검사 (kid_use_sig_id_token)
+HIGH		ID토큰 헤더의 외부키 참조 금지 여부 확인 (header_external_ref_id_token)
+HIGH		ID토큰 KID 패턴 확인 (kid_pattern_id_token)
+HIGH		액세스토큰 내 KID 존재 확인 (kid_present_access_token)
+HIGH		액세스토큰 내 KID, JWKS 키 일치 여부 확인 (kid_known_access_token)
+MID		액세스토큰 KID 용도 검사 (kid_use_sig_access_token)
+HIGH		액세스토큰 헤더의 외부키 참조 금지 여부 확인 (header_external_ref_access_token)
+HIGH		액세스토큰 KID 패턴 확인 (kid_pattern_access_token)
+HIGH		클라이언트 어센셜 헤더 내 KID 존재 확인 (kid_present_client_assertion)
+MID		JWKS, JWKS URI 중복 사용 검사 (registration_jwks_vs_jwks_uri)
+	보안 테스트
+MID		알려지지 않은 KID 주입 공격 (inject_unknown_kid)
+MID		헤더 인젝션 공격 (header_injection_fields_seen)
+MID		HS RS 변경 공격 (hs_rs_switch)
+MID		KID Traversal (kid_traversal)

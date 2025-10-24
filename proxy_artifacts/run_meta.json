@@ -1,15 +1,15 @@
 {
-  "started_at": "2025-10-20T21:30:11.538066+00:00",
-  "finished_at": "2025-10-20T21:33:13.803752+00:00",
+  "started_at": "2025-10-24T02:09:30.173767+00:00",
+  "finished_at": "2025-10-24T02:09:33.238974+00:00",
   "packets_saved": {
-    "requests": 52,
-    "responses": 46,
+    "requests": 0,
+    "responses": 0,
     "errors": 0
   },
   "capture_mode": "internal",
   "selenium_wire_active": false,
   "listen_host": "192.168.219.100",
-  "listen_port": 8080,
+  "listen_port": 18080,
   "ssl_insecure": true,
   "login_url": null
 }

@@ -1,0 +1,65 @@
+{
+  "issuer_inferred": "https://happy.songsings.site/kc/realms/web-service",
+  "discovery_url_used": "https://happy.songsings.site/kc/realms/web-service/.well-known/openid-configuration",
+  "jwks_url": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/certs",
+  "warnings": [],
+  "discovery_core": {
+    "authorization_endpoint": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/auth",
+    "token_endpoint": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/token",
+    "userinfo_endpoint": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/userinfo",
+    "revocation_endpoint": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/revoke",
+    "introspection_endpoint": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/token/introspect",
+    "end_session_endpoint": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/logout",
+    "grant_types_supported": [
+      "authorization_code",
+      "client_credentials",
+      "implicit",
+      "password",
+      "refresh_token",
+      "urn:ietf:params:oauth:grant-type:device_code",
+      "urn:ietf:params:oauth:grant-type:token-exchange",
+      "urn:ietf:params:oauth:grant-type:uma-ticket",
+      "urn:openid:params:grant-type:ciba"
+    ],
+    "response_types_supported": [
+      "code",
+      "none",
+      "id_token",
+      "token",
+      "id_token token",
+      "code id_token",
+      "code token",
+      "code id_token token"
+    ],
+    "id_token_signing_alg_values_supported": [
+      "PS384",
+      "RS384",
+      "EdDSA",
+      "ES384",
+      "HS256",
+      "HS512",
+      "ES256",
+      "RS256",
+      "HS384",
+      "ES512",
+      "PS256",
+      "PS512",
+      "RS512"
+    ]
+  },
+  "attempts": [
+    {
+      "url": "https://happy.songsings.site/kc/realms/web-service/.well-known/openid-configuration",
+      "status": 200,
+      "ct": "application/json;charset=UTF-8"
+    }
+  ],
+  "jwks_attempts": [
+    {
+      "url": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/certs",
+      "status": 200,
+      "ct": "application/json"
+    }
+  ],
+  "created_at": "2025-10-23T23:23:23.113034+00:00"
+}
