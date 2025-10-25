@@ -165,34 +165,42 @@ def mkfind(fid: str, title: str, sev: str, desc: str, evidence: str, rec: str) -
 
 # ==================== Analyzer Classes ====================
 
-class OtherSensitiveAnalyzer:
+class FrontChannelTokenLeakAnalyzer:
     """
-    client_secret을 제외한 다른 프론트채널 민감 키들(access_token, id_token, refresh_token 등)
-    에 대한 진단.
+    프론트채널(브라우저를 통해 보이는 경로: URL query/fragment, Referer, 히스토리 등)로
+    OAuth/OIDC 토큰(access_token, id_token, refresh_token)이 노출되는지 진단합니다.
     """
-    SENSITIVE_KEYS = {"access_token", "id_token", "refresh_token"}
+
+    SENSITIVE_TOKENS = {"access_token", "id_token", "refresh_token"}
 
     def analyze(self, packets: List[Dict[str, Any]], session_tokens: Dict[str, Any]) -> List[Dict[str, Any]]:
         findings: List[Dict[str, Any]] = []
 
-        # 1) URL query: access_token/id_token/refresh_token 노출
+        # 1) URL query에 토큰 노출
         for pkt in packets:
             if pkt.get("type") != "request":
                 continue
             req = pkt.get("request", {})
             url = req.get("url", "")
-            pf = parse_query_fragment(url)
-            leaked = self.SENSITIVE_KEYS & set(pf["query"].keys())
+            pf = parse_query_fragment(url)  # query/fragment 모두 파싱된다고 가정
+            leaked = self.SENSITIVE_TOKENS & set(pf["query"].keys())
             for k in leaked:
                 v = pf["query"][k]
                 evidence = f"Request URL: {url}\nQuery param {k}={mask_secret(v)}"
                 findings.append(mkfind(
-                    "5.0-QUERY-SENSITIVE",
-                    f"민감 파라미터({k})가 URL 쿼리에 포함됨",
+                    "5.0-QUERY-TOKEN",
+                    f"토큰({k})이 URL 쿼리에 포함됨",
                     "HIGH",
-                    f"{k}은(는) 프론트채널 노출에 민감한 값입니다. URL에 포함될 경우 노출 위험이 큽니다.",
+                    (
+                        f"{k}은(는) 브라우저 주소창, 히스토리, 로그 등에 남아 제3자에게 노출될 수 있습니다. "
+                        "토큰은 프론트채널(URL)에 절대 포함하지 마세요."
+                    ),
                     evidence,
-                    "민감 값은 URL에 포함하지 마시고, 필요 시 안전한 백엔드 전송/세션 방식으로 처리하세요."
+                    (
+                        "권장: Authorization Code + PKCE 사용, response_mode=form_post(가능 시), "
+                        "토큰은 백엔드로 안전하게 전달(쿠키 HttpOnly/SameSite 활용 또는 BFF 패턴)하고 "
+                        "프론트에는 보관하지 않기."
+                    )
                 ))
 
         # 2) Referer 헤더로 노출
@@ -205,17 +213,27 @@ class OtherSensitiveAnalyzer:
             if not ref:
                 continue
             pf = parse_query_fragment(ref)
-            leaked = self.SENSITIVE_KEYS & set(pf["query"].keys())
+            leaked = self.SENSITIVE_TOKENS & set(pf["query"].keys())
             for k in leaked:
                 v = pf["query"][k]
-                evidence = f"Request URL: {req.get('url')}\nReferer: {ref}\nLeaked: {k}={mask_secret(v)}"
+                evidence = (
+                    f"Request URL: {req.get('url')}\n"
+                    f"Referer: {ref}\n"
+                    f"Leaked: {k}={mask_secret(v)}"
+                )
                 findings.append(mkfind(
-                    "5.0-REFERER-SENSITIVE",
-                    f"Referer로 민감 파라미터({k}) 유출",
+                    "5.0-REFERER-TOKEN",
+                    f"Referer로 토큰({k}) 유출",
                     "HIGH",
-                    f"Referer에 {k}이(가) 포함되어 제3자에 유출될 수 있습니다.",
+                    (
+                        f"페이지 간 이동 시 Referer에 {k}이(가) 포함되어 타 도메인(광고/분석/이미지 CDN 등)으로 "
+                        "유출될 수 있습니다."
+                    ),
                     evidence,
-                    "Referrer-Policy 적용 및 URL에 민감 파라미터 보관 금지."
+                    (
+                        "권장: URL에 토큰을 넣지 않기 + 'Referrer-Policy: no-referrer' 또는 "
+                        "'strict-origin-when-cross-origin' 설정, fragment/query 사용 금지."
+                    )
                 ))
 
         return findings
@@ -553,8 +571,8 @@ class ConsentAnalyzer:
 
 EXPECTED_CHECKS = {
     "5.0": [
-        ("5.0-QUERY-SENSITIVE",   "Query Sensitive",   "민감 파라미터가 URL 쿼리에 포함됨"),
-        ("5.0-REFERER-SENSITIVE", "Referer Sensitive", "Referer로 민감 파라미터 유출"),
+        ("5.0-QUERY-TOKEN",   "Query Token Leak",   "토큰이 URL 쿼리에 포함됨"),
+        ("5.0-REFERER-TOKEN", "Referer Token Leak", "Referer로 토큰 유출"),
     ],
     "5.1": [
         ("5.1-QUERY-CLIENT-SECRET",   "Client Secret Query",    "client_secret이 URL 쿼리에 포함됨"),
@@ -576,7 +594,7 @@ EXPECTED_CHECKS = {
 }
 
 def analyze_and_report(packets: List[Dict[str,Any]], session_tokens:Dict[str,Any]) -> Dict[str,Any]:
-    analyzers = [ClientSecretAnalyzer(), StateAnalyzer(), ConsentAnalyzer(), OtherSensitiveAnalyzer()]
+    analyzers = [ClientSecretAnalyzer(), StateAnalyzer(), ConsentAnalyzer(),  FrontChannelTokenLeakAnalyzer(),]
     all_findings: List[Dict[str, Any]] = []
 
     # ---- 사전 플래그(NA 판단용, 확장) ----
@@ -673,8 +691,8 @@ def analyze_and_report(packets: List[Dict[str,Any]], session_tokens:Dict[str,Any
     # ---- 체크별 결과(PASS/FAIL/NA) 산출 (확장 NA RULES) ----
     NA_RULES = {
         # 5.0
-        "5.0-QUERY-SENSITIVE":   lambda: (not saw_any_request) or (not saw_any_query),
-        "5.0-REFERER-SENSITIVE": lambda: (not saw_any_request) or (not saw_any_referer),
+        "5.0-QUERY-TOKEN":   lambda: (not saw_any_request) or (not saw_any_query),
+        "5.0-REFERER-TOKEN": lambda: (not saw_any_request) or (not saw_any_referer),
 
         # 5.1
         "5.1-QUERY-CLIENT-SECRET":   lambda: (not saw_any_request) or (not saw_any_query),
