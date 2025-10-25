@@ -10,7 +10,6 @@ HIGH		Referer 헤더 내 클라이언트 시크릿 포함 여부 검사 (Client 
 HIGH		클라이언트 시크릿 전송 시 https 사용 확인 (Token Body Secret)
 HIGH		세션 및 토큰 내 클라이언트 시크릿 존재 검사 (Session token secret)
 
-
 STATE
 	STATE
 MID		인가 요청 내 STATE 존재 확인 (State Missing)
