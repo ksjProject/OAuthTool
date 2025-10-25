@@ -167,73 +167,110 @@ def mkfind(fid: str, title: str, sev: str, desc: str, evidence: str, rec: str) -
 
 class FrontChannelTokenLeakAnalyzer:
     """
-    프론트채널(브라우저를 통해 보이는 경로: URL query/fragment, Referer, 히스토리 등)로
+    프론트채널(브라우저를 통해 보이는 경로: URL query/fragment, Referer 등)로
     OAuth/OIDC 토큰(access_token, id_token, refresh_token)이 노출되는지 진단합니다.
+    - 요청 1개당, 벡터별(주소창/Referer) finding 1개 생성
+    - 동일 요청 내 여러 토큰이 있으면 증거에 모두 나열
+    - query와 fragment 모두 검사
     """
 
     SENSITIVE_TOKENS = {"access_token", "id_token", "refresh_token"}
 
+    def _collect_leaks(self, pf: Dict[str, Any]) -> list[tuple[str, str, str]]:
+        """
+        parse_query_fragment(url) 결과에서 query/fragment 양쪽을 스캔해
+        민감 토큰 노출 항목을 [(source, key, value), ...] 형태로 수집.
+        source ∈ {"query", "fragment"}
+        """
+        items = []
+        # query
+        q_keys = self.SENSITIVE_TOKENS & set((pf.get("query") or {}).keys())
+        for k in sorted(q_keys):
+            items.append(("query", k, pf["query"][k]))
+        # fragment
+        f_keys = self.SENSITIVE_TOKENS & set((pf.get("fragment") or {}).keys())
+        for k in sorted(f_keys):
+            items.append(("fragment", k, pf["fragment"][k]))
+        return items
+
     def analyze(self, packets: List[Dict[str, Any]], session_tokens: Dict[str, Any]) -> List[Dict[str, Any]]:
         findings: List[Dict[str, Any]] = []
 
-        # 1) URL query에 토큰 노출
+        # 1) URL(주소창) 노출: 요청 URL의 query/fragment 모두 검사
         for pkt in packets:
             if pkt.get("type") != "request":
                 continue
-            req = pkt.get("request", {})
-            url = req.get("url", "")
-            pf = parse_query_fragment(url)  # query/fragment 모두 파싱된다고 가정
-            leaked = self.SENSITIVE_TOKENS & set(pf["query"].keys())
-            for k in leaked:
-                v = pf["query"][k]
-                evidence = f"Request URL: {url}\nQuery param {k}={mask_secret(v)}"
+            req = pkt.get("request", {}) or {}
+            url = req.get("url", "") or ""
+            pf = parse_query_fragment(url)
+
+            leaks = self._collect_leaks(pf)
+            if leaks:
+                # 증거를 한 번에 모아서 출력 (동일 요청 내 여러 토큰/소스 포함)
+                lines = [f"Request URL: {url}"]
+                for src, k, v in leaks:
+                    lines.append(f"{src.capitalize()} param {k}={mask_secret(v)}")
+                evidence = "\n".join(lines)
+
+                # 설명도 다중 토큰을 반영
+                leaked_keys = ", ".join(sorted({k for _, k, _ in leaks}))
+                desc = (
+                    f"{leaked_keys} 이(가) 브라우저 주소창, 히스토리, 로그 등에 남아 제3자에게 노출될 수 있습니다. "
+                    "토큰은 프론트채널(URL)에 절대 포함하지 마세요."
+                )
+                rec = (
+                    "권장: Authorization Code + PKCE 사용, response_mode=form_post(가능 시), "
+                    "토큰은 백엔드로 안전하게 전달(쿠키 HttpOnly/SameSite 또는 BFF 패턴)하고 "
+                    "프론트에는 보관하지 않기."
+                )
+
                 findings.append(mkfind(
-                    "5.0-QUERY-TOKEN",
-                    "Query Token Leak",                       # ← 영문 타이틀로 변경
+                    "5.0-QUERY-TOKEN",     # 기존 체크 ID 유지
+                    "Query Token Leak",
                     "HIGH",
-                    (
-                        f"{k}은(는) 브라우저 주소창, 히스토리, 로그 등에 남아 제3자에게 노출될 수 있습니다. "
-                        "토큰은 프론트채널(URL)에 절대 포함하지 마세요."
-                    ),
+                    desc,
                     evidence,
-                    (
-                        "권장: Authorization Code + PKCE 사용, response_mode=form_post(가능 시), "
-                        "토큰은 백엔드로 안전하게 전달(쿠키 HttpOnly/SameSite 활용 또는 BFF 패턴)하고 "
-                        "프론트에는 보관하지 않기."
-                    )
+                    rec
                 ))
 
-        # 2) Referer 헤더로 노출
+        # 2) Referer 헤더를 통한 노출: Referer URL의 query/fragment 모두 검사
         for pkt in packets:
             if pkt.get("type") != "request":
                 continue
-            req = pkt.get("request", {})
+            req = pkt.get("request", {}) or {}
             headers = normalize_headers(req.get("headers", {}))
             ref = headers.get("referer")
             if not ref:
                 continue
+
             pf = parse_query_fragment(ref)
-            leaked = self.SENSITIVE_TOKENS & set(pf["query"].keys())
-            for k in leaked:
-                v = pf["query"][k]
-                evidence = (
-                    f"Request URL: {req.get('url')}\n"
-                    f"Referer: {ref}\n"
-                    f"Leaked: {k}={mask_secret(v)}"
+            leaks = self._collect_leaks(pf)
+            if leaks:
+                lines = [
+                    f"Request URL: {req.get('url')}",
+                    f"Referer: {ref}",
+                ]
+                for src, k, v in leaks:
+                    lines.append(f"Leaked via {src}: {k}={mask_secret(v)}")
+                evidence = "\n".join(lines)
+
+                leaked_keys = ", ".join(sorted({k for _, k, _ in leaks}))
+                desc = (
+                    f"페이지 간 이동 시 Referer에 {leaked_keys} 이(가) 포함되어 타 도메인(광고/분석/이미지 CDN 등)으로 "
+                    "유출될 수 있습니다."
                 )
+                rec = (
+                    "권장: URL에 토큰을 넣지 않기 + 'Referrer-Policy: no-referrer' 또는 "
+                    "'strict-origin-when-cross-origin' 설정."
+                )
+
                 findings.append(mkfind(
-                    "5.0-REFERER-TOKEN",
-                    "Referer Token Leak",                     # ← 영문 타이틀로 변경
+                    "5.0-REFERER-TOKEN",   # 기존 체크 ID 유지
+                    "Referer Token Leak",
                     "HIGH",
-                    (
-                        f"페이지 간 이동 시 Referer에 {k}이(가) 포함되어 타 도메인(광고/분석/이미지 CDN 등)으로 "
-                        "유출될 수 있습니다."
-                    ),
+                    desc,
                     evidence,
-                    (
-                        "권장: URL에 토큰을 넣지 않기 + 'Referrer-Policy: no-referrer' 또는 "
-                        "'strict-origin-when-cross-origin' 설정."
-                    )
+                    rec
                 ))
 
         return findings
