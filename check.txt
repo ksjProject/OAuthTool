@@ -1,7 +1,7 @@
 Token Exposure (Front-channel)
     Token Exposure
-HIGH         URL 쿼리 내 access_token 노출 (Query Token Leak_access_token))
-HIGH         URL 쿼리 내 id_token 노출 (Query Token Leak_id_token))
+HIGH         URL 쿼리 내 access_token 노출 (Query Token Leak_access_token)
+HIGH         URL 쿼리 내 id_token 노출 (Query Token Leak_id_token)
 HIGH         URL 쿼리 내 refresh_token 노출 (Query Token Leak_refresh_token)
 HIGH         Referer 내 access_token 유출 (Referer Token Leak_access_token)
 HIGH         Referer 내 id_token 유출 (Referer Token Leak_id_token)
