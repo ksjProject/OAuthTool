@@ -167,113 +167,89 @@ def mkfind(fid: str, title: str, sev: str, desc: str, evidence: str, rec: str) -
 
 class FrontChannelTokenLeakAnalyzer:
     """
-    프론트채널(브라우저를 통해 보이는 경로: URL query/fragment, Referer 등)로
-    OAuth/OIDC 토큰(access_token, id_token, refresh_token)이 노출되는지 진단합니다.
-    - 요청 1개당, 벡터별(주소창/Referer) finding 1개 생성
-    - 동일 요청 내 여러 토큰이 있으면 증거에 모두 나열
-    - query와 fragment 모두 검사
+    프론트채널(URL query/fragment, Referer)로 토큰(access_token, id_token, refresh_token) 노출 진단.
+    - 벡터(URL/Referer) × 토큰별 6개 체크로 분리하여 title과 id를 각각 생성
     """
 
-    SENSITIVE_TOKENS = {"access_token", "id_token", "refresh_token"}
+    SENSITIVE_TOKENS = ("access_token", "id_token", "refresh_token")
 
-    def _collect_leaks(self, pf: Dict[str, Any]) -> list[tuple[str, str, str]]:
-        """
-        parse_query_fragment(url) 결과에서 query/fragment 양쪽을 스캔해
-        민감 토큰 노출 항목을 [(source, key, value), ...] 형태로 수집.
-        source ∈ {"query", "fragment"}
-        """
-        items = []
-        # query
-        q_keys = self.SENSITIVE_TOKENS & set((pf.get("query") or {}).keys())
-        for k in sorted(q_keys):
-            items.append(("query", k, pf["query"][k]))
-        # fragment
-        f_keys = self.SENSITIVE_TOKENS & set((pf.get("fragment") or {}).keys())
-        for k in sorted(f_keys):
-            items.append(("fragment", k, pf["fragment"][k]))
-        return items
+    TITLE_MAP = {
+        ("url", "access_token"):   "Query Token Leak (access_token)",
+        ("url", "id_token"):       "Query Token Leak (id_token)",
+        ("url", "refresh_token"):  "Query Token Leak (refresh_token)",
+        ("referer", "access_token"):   "Referer Token Leak (access_token)",
+        ("referer", "id_token"):       "Referer Token Leak (id_token)",
+        ("referer", "refresh_token"):  "Referer Token Leak (refresh_token)",
+    }
+
+    def _collect_by_token(self, pf: Dict[str, Any]) -> Dict[str, list[tuple[str, str]]]:
+        out = {t: [] for t in self.SENSITIVE_TOKENS}
+        q = pf.get("query") or {}
+        f = pf.get("fragment") or {}
+        for t in self.SENSITIVE_TOKENS:
+            if t in q: out[t].append(("query", q[t]))
+            if t in f: out[t].append(("fragment", f[t]))
+        return {k: v for k, v in out.items() if v}
 
     def analyze(self, packets: List[Dict[str, Any]], session_tokens: Dict[str, Any]) -> List[Dict[str, Any]]:
         findings: List[Dict[str, Any]] = []
 
-        # 1) URL(주소창) 노출: 요청 URL의 query/fragment 모두 검사
+        # URL(주소창)
         for pkt in packets:
             if pkt.get("type") != "request":
                 continue
-            req = pkt.get("request", {}) or {}
-            url = req.get("url", "") or ""
+            req = (pkt.get("request") or {})
+            url = (req.get("url") or "")
             pf = parse_query_fragment(url)
+            leaks_by_token = self._collect_by_token(pf)
 
-            leaks = self._collect_leaks(pf)
-            if leaks:
-                # 증거를 한 번에 모아서 출력 (동일 요청 내 여러 토큰/소스 포함)
+            for token_name, evids in sorted(leaks_by_token.items()):
+                title = self.TITLE_MAP[("url", token_name)]
                 lines = [f"Request URL: {url}"]
-                for src, k, v in leaks:
-                    lines.append(f"{src.capitalize()} param {k}={mask_secret(v)}")
-                evidence = "\n".join(lines)
-
-                # 설명도 다중 토큰을 반영
-                leaked_keys = ", ".join(sorted({k for _, k, _ in leaks}))
-                desc = (
-                    f"{leaked_keys} 이(가) 브라우저 주소창, 히스토리, 로그 등에 남아 제3자에게 노출될 수 있습니다. "
-                    "토큰은 프론트채널(URL)에 절대 포함하지 마세요."
-                )
-                rec = (
-                    "권장: Authorization Code + PKCE 사용, response_mode=form_post(가능 시), "
-                    "토큰은 백엔드로 안전하게 전달(쿠키 HttpOnly/SameSite 또는 BFF 패턴)하고 "
-                    "프론트에는 보관하지 않기."
-                )
-
+                for src, val in evids:
+                    lines.append(f"{src.capitalize()} param {token_name}={mask_secret(val)}")
                 findings.append(mkfind(
-                    "5.0-QUERY-TOKEN",     # 기존 체크 ID 유지
-                    "Query Token Leak",
+                    f"5.0-QUERY-TOKEN:{token_name}",   # ← 토큰별 ID
+                    title,                             # ← 토큰별 Title (report 키)
                     "HIGH",
-                    desc,
-                    evidence,
-                    rec
+                    (f"{token_name}이(가) 브라우저 주소창/히스토리/로그 등에 남아 제3자에게 노출될 수 있습니다. "
+                     "토큰은 프론트채널(URL)에 절대 포함하지 마세요."),
+                    "\n".join(lines),
+                    ("권장: Authorization Code + PKCE, 가능 시 response_mode=form_post, "
+                     "토큰은 백엔드로 안전 전달(HttpOnly/SameSite 쿠키 또는 BFF 패턴) 및 프론트 비보관.")
                 ))
 
-        # 2) Referer 헤더를 통한 노출: Referer URL의 query/fragment 모두 검사
+        # Referer
         for pkt in packets:
             if pkt.get("type") != "request":
                 continue
-            req = pkt.get("request", {}) or {}
+            req = (pkt.get("request") or {})
             headers = normalize_headers(req.get("headers", {}))
             ref = headers.get("referer")
             if not ref:
                 continue
 
             pf = parse_query_fragment(ref)
-            leaks = self._collect_leaks(pf)
-            if leaks:
-                lines = [
-                    f"Request URL: {req.get('url')}",
-                    f"Referer: {ref}",
-                ]
-                for src, k, v in leaks:
-                    lines.append(f"Leaked via {src}: {k}={mask_secret(v)}")
-                evidence = "\n".join(lines)
+            leaks_by_token = self._collect_by_token(pf)
 
-                leaked_keys = ", ".join(sorted({k for _, k, _ in leaks}))
-                desc = (
-                    f"페이지 간 이동 시 Referer에 {leaked_keys} 이(가) 포함되어 타 도메인(광고/분석/이미지 CDN 등)으로 "
-                    "유출될 수 있습니다."
-                )
-                rec = (
-                    "권장: URL에 토큰을 넣지 않기 + 'Referrer-Policy: no-referrer' 또는 "
-                    "'strict-origin-when-cross-origin' 설정."
-                )
-
+            for token_name, evids in sorted(leaks_by_token.items()):
+                title = self.TITLE_MAP[("referer", token_name)]
+                lines = [f"Request URL: {req.get('url')}", f"Referer: {ref}"]
+                for src, val in evids:
+                    lines.append(f"Leaked via {src}: {token_name}={mask_secret(val)}")
                 findings.append(mkfind(
-                    "5.0-REFERER-TOKEN",   # 기존 체크 ID 유지
-                    "Referer Token Leak",
+                    f"5.0-REFERER-TOKEN:{token_name}", # ← 토큰별 ID
+                    title,                              # ← 토큰별 Title (report 키)
                     "HIGH",
-                    desc,
-                    evidence,
-                    rec
+                    (f"페이지 간 이동 시 Referer에 {token_name}이(가) 포함되어 타 도메인(광고/분석/이미지 CDN 등)으로 유출될 수 있습니다."),
+                    "\n".join(lines),
+                    ("권장: URL에 토큰을 넣지 않기 + 'Referrer-Policy: no-referrer' 또는 "
+                     "'strict-origin-when-cross-origin' 설정.")
                 ))
 
         return findings
+
+
 
 
 class ClientSecretAnalyzer:
@@ -607,9 +583,14 @@ class ConsentAnalyzer:
 # ==================== Report Generator (PASS/FAIL/NA) ====================
 
 EXPECTED_CHECKS = {
-    "5.0": [
-        ("5.0-QUERY-TOKEN",   "Query Token Leak",   "토큰이 URL 쿼리에 포함됨"),
-        ("5.0-REFERER-TOKEN", "Referer Token Leak", "Referer로 토큰 유출"),
+ "5.0": [
+        ("5.0-QUERY-TOKEN:access_token",   "Query Token Leak (access_token)",   "URL 쿼리/프래그먼트 내 access_token 노출"),
+        ("5.0-QUERY-TOKEN:id_token",       "Query Token Leak (id_token)",       "URL 쿼리/프래그먼트 내 id_token 노출"),
+        ("5.0-QUERY-TOKEN:refresh_token",  "Query Token Leak (refresh_token)",  "URL 쿼리/프래그먼트 내 refresh_token 노출"),
+
+        ("5.0-REFERER-TOKEN:access_token",  "Referer Token Leak (access_token)",  "Referer로 access_token 유출"),
+        ("5.0-REFERER-TOKEN:id_token",      "Referer Token Leak (id_token)",      "Referer로 id_token 유출"),
+        ("5.0-REFERER-TOKEN:refresh_token", "Referer Token Leak (refresh_token)", "Referer로 refresh_token 유출"),
     ],
     "5.1": [
         ("5.1-QUERY-CLIENT-SECRET",   "Client Secret Query",    "client_secret이 URL 쿼리에 포함됨"),
@@ -727,9 +708,14 @@ def analyze_and_report(packets: List[Dict[str,Any]], session_tokens:Dict[str,Any
 
     # ---- 체크별 결과(PASS/FAIL/NA) 산출 (확장 NA RULES) ----
     NA_RULES = {
-        # 5.0
-        "5.0-QUERY-TOKEN":   lambda: (not saw_any_request) or (not saw_any_query),
-        "5.0-REFERER-TOKEN": lambda: (not saw_any_request) or (not saw_any_referer),
+       # 5.0
+        "5.0-QUERY-TOKEN:access_token":   lambda: (not saw_any_request) or (not saw_any_query),
+        "5.0-QUERY-TOKEN:id_token":       lambda: (not saw_any_request) or (not saw_any_query),
+        "5.0-QUERY-TOKEN:refresh_token":  lambda: (not saw_any_request) or (not saw_any_query),
+
+        "5.0-REFERER-TOKEN:access_token":  lambda: (not saw_any_request) or (not saw_any_referer),
+        "5.0-REFERER-TOKEN:id_token":      lambda: (not saw_any_request) or (not saw_any_referer),
+        "5.0-REFERER-TOKEN:refresh_token": lambda: (not saw_any_request) or (not saw_any_referer),
 
         # 5.1
         "5.1-QUERY-CLIENT-SECRET":   lambda: (not saw_any_request) or (not saw_any_query),
