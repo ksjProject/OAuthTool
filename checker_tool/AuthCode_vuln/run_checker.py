@@ -1,27 +1,31 @@
 #!/usr/bin/env python3
-# run_checker.py — KSJ15_vuln unified runner/adapter
-# Default OUTDIR: <module_dir>\out  (so results sit next to the vuln module)
+# run_checker.py — KSJ15_vuln unified runner/adapter (patched for custom discovery paths)
 #
-# Extras:
-#  - --outdir "@module"  -> resolves to <module_dir>\out
-#  - --outdir ".\out"    -> respects current working dir
-#  - Auto-creates outdir before writing any files
+# - 기존 CLI 유지:  run_checker.py <input_json> --module <module.py> [--outdir OUT]
+# - 추가 옵션:
+#     --discovery-dir   (기본: C:\Users\com\Desktop\OAuthTool\discovery_artifacts)
+#     --discovery-file  (기본: <discovery-dir>\openid_configuration.json)
+#     --jwks-file       (기본: <discovery-dir>\jwks.json)
+#     --single-json     (선택) 결과를 JSON 1개만 저장
 #
-# New (discovery attach):
-#  * If input JSON does not have "discovery", this runner will look for
-#    files next to the input JSON and auto-attach what it finds:
-#       - openid_configuration.json
-#       - summary.json
-#       - jwks.json (kept as discovery.jwks for reference)
-#
-#  * This allows the vuln module to cross-check 'iss' and server capabilities.
+# - 동작:
+#   * 입력 JSON에 discovery가 없으면, 위 경로들에서 찾아서 주입.
+#   * 기존과 동일하게 flow_from_session.json 생성(단, --single-json이면 생략하지 않음; 보고서만 단일화).
+#   * 저장 위치는 --outdir. (미지정 시 모듈 폴더\out)
 
 import argparse, importlib.util, json, os, sys, urllib.parse
 from datetime import datetime, timezone
 
+DEFAULT_DISCOVERY_DIR   = r"C:\Users\com\Desktop\OAuthTool\discovery_artifacts"
+DEFAULT_DISCOVERY_FILE  = os.path.join(DEFAULT_DISCOVERY_DIR, "openid_configuration.json")
+DEFAULT_JWKS_FILE       = os.path.join(DEFAULT_DISCOVERY_DIR, "jwks.json")
+
 def _load_module(module_path: str):
     spec = importlib.util.spec_from_file_location("vuln_module", module_path)
+    if not spec or not spec.loader:
+        raise RuntimeError(f"Invalid module path: {module_path}")
     mod = importlib.util.module_from_spec(spec)
+    # dataclasses 등에서 __module__ 조회 시 필요
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
     return mod
@@ -52,24 +56,36 @@ def _try_load_json(path: str):
     except Exception:
         return None
 
-def _attach_discovery_if_missing(flow_bundle: dict, input_json_path: str):
+def _attach_discovery(flow_bundle: dict, sidecar_base: str, discovery_file: str, jwks_file: str):
+    """입력에 discovery가 없으면, 우선순위대로 주입:
+       1) --discovery-file 명시 경로
+       2) 입력 JSON과 같은 폴더의 openid_configuration.json / summary.json
+       3) --discovery-dir 기본 경로의 파일
+    """
     if flow_bundle.get("discovery"):
         return flow_bundle
-    base = os.path.dirname(os.path.abspath(input_json_path))
-    cand = [
-        os.path.join(base, "openid_configuration.json"),
-        os.path.join(base, "summary.json"),
-    ]
-    disc = None
-    for p in cand:
-        j = _try_load_json(p)
-        if j:
-            disc = j
-            break
+
+    # 1) 명시 파일
+    disc = _try_load_json(discovery_file) if discovery_file else None
+
+    # 2) 사이드카
+    if not disc:
+        for p in (os.path.join(sidecar_base, "openid_configuration.json"),
+                  os.path.join(sidecar_base, "summary.json")):
+            disc = _try_load_json(p)
+            if disc:
+                break
+
+    # 3) 디폴트 디렉토리
+    if not disc and DEFAULT_DISCOVERY_FILE:
+        disc = _try_load_json(DEFAULT_DISCOVERY_FILE)
+
     if disc:
         flow_bundle["discovery"] = disc
-        # JWKS kept for reference
-        jwks = _try_load_json(os.path.join(base, "jwks.json"))
+        # JWKS는 참조용으로 discovery에 같이 보관
+        jwks = _try_load_json(jwks_file) if jwks_file else None
+        if not jwks and DEFAULT_JWKS_FILE:
+            jwks = _try_load_json(DEFAULT_JWKS_FILE)
         if jwks:
             flow_bundle["discovery"]["_jwks_cached"] = jwks
     return flow_bundle
@@ -113,8 +129,6 @@ def _normalize_from_session(session_json: dict) -> dict:
         "refresh_token_response": session_json.get("refresh_token_response") or {"json": {}},
         "previous_nonces": session_json.get("previous_nonces") or []
     }
-    # Attach discovery if missing, using the sidecar files next to the input JSON
-    flow_bundle = _attach_discovery_if_missing(flow_bundle, session_json.get("_input_json_path", ""))
     return flow_bundle
 
 def _maybe_to_markdown(mod, result: dict, pretty_text: str) -> str:
@@ -129,15 +143,21 @@ def _maybe_to_markdown(mod, result: dict, pretty_text: str) -> str:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("input_json", help="session_token.json 또는 flow_bundle.json")
+    ap.add_argument("input_json", help="session.token.json / session_token.json / flow_bundle.json")
     ap.add_argument("--module", required=True, help="취약점 모듈 경로 (예: auth_code_theft_checker.py)")
     ap.add_argument("--outdir", default=None, help="산출물 폴더 (기본: 모듈 폴더\\out)")
+    # 새 옵션(경로 커스터마이즈)
+    ap.add_argument("--discovery-dir", default=DEFAULT_DISCOVERY_DIR, help="디스커버리 파일 폴더")
+    ap.add_argument("--discovery-file", default=None, help="명시적 openid_configuration.json 경로")
+    ap.add_argument("--jwks-file", default=None, help="명시적 jwks.json 경로")
+    # 선택: JSON만 저장하고 싶으면 사용
+    ap.add_argument("--single-json", action="store_true", help="보고서를 JSON 1개만 저장")
     args = ap.parse_args()
 
     mod = _load_module(args.module)
     module_key = getattr(mod, "MODULE_KEY", os.path.splitext(os.path.basename(args.module))[0])
 
-    # Resolve outdir
+    # outdir 결정
     module_dir = os.path.dirname(os.path.abspath(args.module))
     if args.outdir in (None, "", "@module"):
         outdir = os.path.join(module_dir, "out")
@@ -147,11 +167,10 @@ def main():
             outdir = os.path.normpath(os.path.join(os.getcwd(), outdir))
     os.makedirs(outdir, exist_ok=True)
 
+    # 입력 로드
     with open(args.input_json, "r", encoding="utf-8") as f:
         data = json.load(f)
-    # Stash input path so the normalizer can locate sibling discovery files
-    data["_input_json_path"] = os.path.abspath(args.input_json)
-
+    # 정규화
     is_session = ("authorization_request" not in data) and ("oauth_tokens" in data or "token_request" in data or "discovery" in data)
     if is_session:
         flow_bundle = _normalize_from_session(data)
@@ -161,27 +180,38 @@ def main():
         print("[+] saved:", norm_path)
     else:
         flow_bundle = data
-        # Attach discovery if sidecar files present
-        flow_bundle = _attach_discovery_if_missing(flow_bundle, args.input_json)
 
+    # discovery 주입 (신규 경로 적용)
+    sidecar_base = os.path.dirname(os.path.abspath(args.input_json))
+    discovery_file = args.discovery_file or os.path.join(args.discovery_dir, "openid_configuration.json")
+    jwks_file = args.jwks_file or os.path.join(args.discovery_dir, "jwks.json")
+    flow_bundle = _attach_discovery(flow_bundle, sidecar_base, discovery_file, jwks_file)
+
+    # 모듈 실행
     result = mod.run_checks(flow_bundle)
     pretty = mod.pretty_report(result)
     md = _maybe_to_markdown(mod, result, pretty)
 
-    txt_path = os.path.join(outdir, f"{module_key}_report.txt")
+    # 저장
     json_path = os.path.join(outdir, f"{module_key}_report.json")
-    md_path = os.path.join(outdir, f"{module_key}_report.md")
+    txt_path  = os.path.join(outdir, f"{module_key}_report.txt")
+    md_path   = os.path.join(outdir, f"{module_key}_report.md")
 
-    with open(txt_path, "w", encoding="utf-8") as f:
-        f.write(pretty)
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(result, f, indent=2, ensure_ascii=False)
-    with open(md_path, "w", encoding="utf-8") as f:
-        f.write(md)
+    if args.single_json:
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
+        print("[+] saved:", json_path)
+    else:
+        with open(txt_path, "w", encoding="utf-8") as f:
+            f.write(pretty)
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(result, f, indent=2, ensure_ascii=False)
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(md)
+        print("[+] saved:", txt_path)
+        print("[+] saved:", json_path)
+        print("[+] saved:", md_path)
 
-    print("[+] saved:", txt_path)
-    print("[+] saved:", json_path)
-    print("[+] saved:", md_path)
     print("\n====== REPORT ======\n")
     print(pretty)
 

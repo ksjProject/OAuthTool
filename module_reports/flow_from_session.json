@@ -1,0 +1,21 @@
+{
+  "discovery": {},
+  "authorization_request": {
+    "url": null,
+    "params": {},
+    "ts": 1761377188
+  },
+  "authorization_response": {
+    "location": null,
+    "params": {}
+  },
+  "callback_request": {},
+  "token_request": {},
+  "token_response": {
+    "json": {}
+  },
+  "refresh_token_response": {
+    "json": {}
+  },
+  "previous_nonces": []
+}

@@ -168,8 +168,8 @@
       "evidence": {
         "by_iss": {
           "https://happy.songsings.site/kc/realms/web-service": [
-            "RS256",
-            "HS512"
+            "HS512",
+            "RS256"
           ]
         }
       },

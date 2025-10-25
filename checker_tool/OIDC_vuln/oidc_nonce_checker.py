@@ -1,371 +1,422 @@
-
+# -*- coding: utf-8 -*-
 """
-oidc_nonce_checker.py — Code-flow centric
-- Removed implicit/hybrid-specific checks:
-  1) A.nonce_required_implicit_hybrid
-  2) B.implicit_hybrid_idtoken_has_nonce
-- Keeps: flow identify, strict nonce for code-flow, entropy/replay, ID Token presence/nonce, equality,
-         issuer/audience/alg/kid consistency, PKCE advisory, 128-bit total entropy.
-- Hides Info rows in pretty_report.
+oidc_nonce_checker.py — OIDC nonce 미사용/미검증 취약점 자동 진단 모듈
+
+Purpose
+- OIDC Authorization Code 플로우 기준으로 nonce 관련 취약점을 점검합니다.
+- 입력은 adapter가 만든 flow_bundle(JSON dict) 하나입니다.
+
+Checks (요지)
+A. Authorization Request
+  - flow_identify: scope/response_type으로 플로우 확인
+  - nonce_used_in_codeflow: (팀 정책) Code Flow에서도 nonce 요구(N1C)
+  - nonce_entropy_freshness: 길이/엔트로피/재사용 의심(N5/N6)
+
+B. ID Token
+  - id_token_must_include_nonce_if_requested: 요청에 nonce 보냈다면 ID Token에 nonce MUST 포함(N2)
+  - (Code에서는 존재만 확인하고, 동등성은 C에서 수행)
+
+C. Client Validation
+  - nonce_equality_validation: 요청 값 == id_token.nonce(MUST)(N4)
+  - nonce_replay_rejection: 이전 관측 nonce 재사용 차단(SHOULD)(N6)
+  - iss_matches_discovery: ID Token iss == discovery.issuer (D1)
+  - aud_includes_client: ID Token aud에 client_id 포함
+  - alg_supported_by_discovery: header.alg ∈ discovery.id_token_signing_alg_values_supported
+  - kid_found_in_jwks: header.kid ∈ jwks.keys[*].kid
+
+Advisory
+  - [A1] PKCE 미사용 추정 (code_challenge(S256) 부재 시 경고)
+
+Labels
+  - FAIL 하나라도 있으면 Overall=FAIL
+  - FAIL 없고 Advisory 있으면 Overall=ADVISORY
+  - 둘 다 없으면 Overall=PASS
 """
-from datetime import datetime, timezone
-from typing import Dict, Any, List
-import re, json
 
-# ---- Policy thresholds ----
-MIN_NONCE_LEN = 16                      # 최소 길이
-MIN_ENTROPY_PER_CHAR = 3.0              # 문자당 Shannon 엔트로피 (bits/char)
-MIN_TOTAL_BITS = 128                    # 총 엔트로피(추정) 최소 128비트
+import base64
+import json
+import math
+import os  # ← 추가: 파일 fallback 로드를 위해 사용
+from typing import Any, Dict, List, Tuple, Optional
 
-# ---- Utilities ----
-def shannon_entropy(s: str) -> float:
+# ======= 외부 참조 파일 기본 경로 (요청 반영) =======
+DISCOVERY_DIR = r"C:\Users\com\Desktop\OAuthTool\discovery_artifacts"
+
+# ========= 공통 유틸 =========
+
+def _b64url_decode(data: str) -> bytes:
+    pad = '=' * (-len(data) % 4)
+    return base64.urlsafe_b64decode(data + pad)
+
+def _parse_jwt(token: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """서명 검증 없이 header/payload만 파싱."""
+    header_b64, payload_b64, *_ = token.split(".")
+    header = json.loads(_b64url_decode(header_b64))
+    payload = json.loads(_b64url_decode(payload_b64))
+    return header, payload
+
+def _shannon_entropy_bits(s: str) -> float:
+    """문자열의 샤논 엔트로피(bit) x 길이 = 총 추정 비트."""
     if not s:
         return 0.0
-    from math import log2
-    freq = {}
-    for ch in s:
-        freq[ch] = freq.get(ch, 0) + 1
+    from collections import Counter
+    cnt = Counter(s)
     H = 0.0
-    L = len(s)
-    for c in freq.values():
-        p = c / L
-        H -= p * log2(p)
-    return H  # bits/char
+    n = len(s)
+    for c in cnt.values():
+        p = c / n
+        H -= p * math.log(p, 2)
+    return H * n  # 총 비트수
 
-def estimate_nonce_bits(s: str) -> Dict[str, Any]:
-    L = len(s)
-    Hc = shannon_entropy(s)            # bits/char
-    shannon_bits = Hc * L
+def _get(d: Dict, *path, default=None):
+    cur = d
+    for p in path:
+        if isinstance(cur, dict) and p in cur:
+            cur = cur[p]
+        else:
+            return default
+    return cur
 
-    if re.fullmatch(r"[0-9a-fA-F]+", s):
-        enc_bits = 4 * L               # hex: 1 char ~= 4 bits
-        method = "min(shannon,hex)"
-    elif re.fullmatch(r"[A-Za-z0-9_-]+", s):
-        enc_bits = 6 * L               # base64url: 1 char ~= 6 bits (대략)
-        method = "min(shannon,base64url)"
-    else:
-        enc_bits = shannon_bits
-        method = "shannon"
+# ========= 정책/기준 =========
 
-    total_bits = min(shannon_bits, enc_bits)
-    return {
-        "length": L,
-        "entropy_per_char": Hc,
-        "total_bits_est": total_bits,
-        "method": method
-    }
+STRICT_CODE_NONCE = True    # 팀 정책: 코드 플로우에서도 nonce 필수
+NONCE_MIN_LEN = 16          # 길이 기준
+NONCE_MIN_BITS = 128.0      # 엔트로피 총 비트 기준 (예: 128비트 이상 권고)
 
-def infer_flow(response_type: str, resp: dict, token: dict) -> str:
-    rt = (response_type or "").replace(" ", "")
-    if rt in ("id_token", "token", "id_tokentoken"):
-        return "implicit"
-    if "id_token" in rt and "code" in rt:
-        return "hybrid"
-    if rt == "code" or "code" in rt:
-        return "code"
-    if (resp or {}).get("id_token") and not (resp or {}).get("code"):
-        return "implicit"
-    return "code"
+# ========= 체크 구현 =========
 
-def _pass(): return {"result": "Pass"}
-def _fail(note=""): return {"result": "Fail", "note": note}
-def _na(): return {"result": "N/A"}
+def _flow_identify(bundle: Dict) -> Tuple[str, Dict[str, Any]]:
+    params = _get(bundle, "authorization_request", "params", default={}) or {}
+    scope = params.get("scope", "")
+    rt = params.get("response_type", "")
+    flow = "code" if "code" in rt else ("implicit/hybrid" if any(x in rt for x in ["id_token", "token"]) else "unknown")
+    return flow, {"scope": scope, "response_type": rt}
 
-# ---- Core checker ----
-def run(flow_bundle: Dict[str, Any], policy: Dict[str, Any] | None = None) -> Dict[str, Any]:
-    policy = policy or {}
-    strict_code_nonce = bool(policy.get("strict_code_nonce", True))
-    min_total_bits = int(policy.get("min_total_bits", MIN_TOTAL_BITS))
+def _nonce_from_request(bundle: Dict) -> Optional[str]:
+    return _get(bundle, "authorization_request", "params", "nonce")
 
-    now = datetime.now(timezone.utc).isoformat()
+def _client_id(bundle: Dict) -> Optional[str]:
+    return _get(bundle, "authorization_request", "params", "client_id")
 
-    req = (flow_bundle.get("authorization_request") or {}).get("params") or {}
-    resp = (flow_bundle.get("authorization_response") or {}).get("params") or {}
-    token = flow_bundle.get("token") or {}
-    refresh = flow_bundle.get("refresh") or {}
-    id_header = token.get("id_token_header") or {}
-    id_payload = token.get("id_token_payload") or {}
-    refresh_payload = refresh.get("id_token_payload") or {}
+def _id_token(bundle: Dict) -> Optional[str]:
+    return _get(bundle, "token_response", "json", "id_token")
 
-    previous_nonces = flow_bundle.get("previous_nonces") or []
-    response_type = (req.get("response_type") or "").strip()
-    flow = flow_bundle.get("flow") or infer_flow(response_type, resp, token)
-    openid_scope = bool(flow_bundle.get("openid_scope"))
+def _previous_nonces(bundle: Dict) -> List[str]:
+    return _get(bundle, "previous_nonces", default=[]) or []
 
-    discovery = flow_bundle.get("discovery") or {}
-    jwks = (flow_bundle.get("jwks") or {}).get("keys", [])
+def _discovery(bundle: Dict) -> Dict[str, Any]:
+    """flow_bundle에 discovery 없으면 고정 경로에서 fallback 로드."""
+    d = bundle.get("discovery") or {}
+    if not d:
+        try:
+            with open(os.path.join(DISCOVERY_DIR, "openid_configuration.json"), "r", encoding="utf-8") as f:
+                d = json.load(f)
+        except Exception:
+            d = {}
+    return d
 
-    # issuer_expected: compute here
-    issuer_expected = (
-        flow_bundle.get("issuer_expected")
-        or (discovery.get("issuer") if isinstance(discovery, dict) else None)
-        or ((flow_bundle.get("authorization_response") or {}).get("params") or {}).get("iss")
-    )
+def _jwks(bundle: Dict) -> Dict[str, Any]:
+    """flow_bundle에 jwks 없으면 고정 경로에서 fallback 로드."""
+    j = bundle.get("jwks") or {}
+    if not j:
+        try:
+            with open(os.path.join(DISCOVERY_DIR, "jwks.json"), "r", encoding="utf-8") as f:
+                j = json.load(f)
+        except Exception:
+            j = {}
+    return j
 
-    req_nonce = req.get("nonce")
-    client_id = req.get("client_id") or req.get("client") or req.get("clientId")
-    id_token_present = bool(token.get("id_token"))
-    id_nonce = id_payload.get("nonce")
-    refresh_nonce = refresh_payload.get("nonce")
-
+def run_checks(bundle: Dict) -> Dict[str, Any]:
     issues: List[Dict[str, Any]] = []
-    checklist = {"A": {}, "B": {}, "C": {}}
-    stats = {"now_utc": now, "flow": flow, "strict_code_nonce": strict_code_nonce}
+    checklist: Dict[str, Dict[str, Any]] = {"A": {}, "B": {}, "C": {}}
 
-    # === A. Authorization Request (code-flow centric) ===
-    checklist["A"]["flow_identify"] = _pass()
-    checklist["A"]["flow_identify"]["observed"] = str({"scope": req.get("scope"), "response_type": response_type})
+    flow, evidence_fi = _flow_identify(bundle)
+    checklist["A"]["flow_identify"] = {"result": "Pass", "evidence": evidence_fi}
 
-    # Code-flow 정책: nonce 사용
+    req_nonce = _nonce_from_request(bundle)
+    idt = _id_token(bundle)
+
+    # A. Authorization Request
     if flow == "code":
-        if req_nonce:
-            checklist["A"]["nonce_used_in_codeflow"] = _pass()
-        else:
-            if strict_code_nonce:
-                checklist["A"]["nonce_used_in_codeflow"] = _fail("팀 정책: code에서도 nonce 요구")
-                issues.append({
-                    "code": "N1C", "level": "FAIL",
-                    "title": "nonce 미포함(Code, strict 정책)",
-                    "detail": "팀 정책(strict_code_nonce=True)에 따라 code 플로우에서도 nonce가 필요합니다.",
-                    "evidence": {"response_type": response_type, "scope": req.get("scope")}
-                })
-            else:
-                checklist["A"]["nonce_used_in_codeflow"] = {"result": "Advisory", "note": "권장: code에서도 nonce 사용"}
-
-    # nonce 엔트로피/총비트/재사용
-    if req_nonce:
-        bits = estimate_nonce_bits(str(req_nonce))
-        stats["req_nonce_len"] = bits["length"]
-        stats["req_nonce_entropy_bits_per_char"] = bits["entropy_per_char"]
-        stats["req_nonce_total_bits_est"] = round(bits["total_bits_est"], 1)
-        stats["req_nonce_bits_method"] = bits["method"]
-
-        weak_len = bits["length"] < MIN_NONCE_LEN
-        weak_entropy = bits["entropy_per_char"] < MIN_ENTROPY_PER_CHAR
-        weak_total = bits["total_bits_est"] < min_total_bits
-
-        if weak_len or weak_entropy or weak_total:
-            reasons = []
-            if weak_len: reasons.append(f"길이<{MIN_NONCE_LEN}")
-            if weak_entropy: reasons.append(f"엔트로피/문자<{MIN_ENTROPY_PER_CHAR}")
-            if weak_total: reasons.append(f"총엔트로피<{min_total_bits}비트")
-            checklist["A"]["nonce_entropy_freshness"] = _fail(", ".join(reasons))
+        if STRICT_CODE_NONCE and not req_nonce:
             issues.append({
-                "code": "N5", "level": "FAIL",
-                "title": "약한 nonce(길이/엔트로피/총비트 기준 미달)",
-                "detail": "요청 nonce의 무작위성이 약하거나 총 엔트로피가 기준 미만입니다.",
-                "evidence": {
-                    "length": bits["length"],
-                    "entropy_per_char": round(bits["entropy_per_char"], 3),
-                    "total_bits_est": round(bits["total_bits_est"], 1),
-                    "min_len": MIN_NONCE_LEN,
-                    "min_entropy_per_char": MIN_ENTROPY_PER_CHAR,
-                    "min_total_bits": min_total_bits
-                }
+                "level": "FAIL",
+                "code": "N1C",
+                "title": "nonce 미포함(Code, strict 정책)",
+                "reason": "Code 플로우에서도 nonce가 없으면 세션 결속/재생 탐지 약화.",
+                "remedy": "인가요청에 강한 난수 'nonce' 포함, 콜백/ID Token과 동일 비교 후 1회용 저장/폐기.",
+                "evidence": {"response_type": _get(bundle, "authorization_request", "params", "response_type"),
+                            "scope": _get(bundle, "authorization_request", "params", "scope")}
             })
+            checklist["A"]["nonce_used_in_codeflow"] = {"result": "Fail"}
         else:
-            checklist["A"]["nonce_entropy_freshness"] = _pass()
+            checklist["A"]["nonce_used_in_codeflow"] = {"result": "Pass"}
     else:
-        checklist["A"]["nonce_entropy_freshness"] = _na()
+        checklist["A"]["nonce_used_in_codeflow"] = {"result": "N/A"}
 
-    # === B. ID Token ===
+    # 엔트로피/신선도
     if req_nonce:
-        if not id_token_present:
-            checklist["B"]["id_token_must_include_nonce_if_requested"] = _fail("ID Token 미수신(N2)")
+        bits = _shannon_entropy_bits(req_nonce)
+        length_ok = len(req_nonce) >= NONCE_MIN_LEN
+        entropy_ok = bits >= NONCE_MIN_BITS
+        if not length_ok or not entropy_ok:
             issues.append({
-                "code": "N2", "level": "FAIL",
+                "level": "FAIL",
+                "code": "N5",
+                "title": "nonce 엔트로피/길이 부족",
+                "reason": f"길이>={NONCE_MIN_LEN}, 엔트로피>={int(NONCE_MIN_BITS)}비트 권장.",
+                "remedy": "CSPRNG 기반 128비트 이상 난수 사용(Base64url 등).",
+                "evidence": {"length": len(req_nonce), "entropy_bits": round(bits, 2)}
+            })
+            checklist["A"]["nonce_entropy_freshness"] = {"result": "Fail", "entropy_bits": bits}
+        else:
+            checklist["A"]["nonce_entropy_freshness"] = {"result": "Pass", "entropy_bits": bits}
+    else:
+        checklist["A"]["nonce_entropy_freshness"] = {"result": "N/A"}
+
+    # B. ID Token
+    if req_nonce:
+        if not idt:
+            issues.append({
+                "level": "FAIL",
+                "code": "N2",
                 "title": "ID Token 미수신",
-                "detail": "요청에 nonce를 보냈으나 ID Token이 수신되지 않았습니다.",
-                "evidence": {"openid_scope": openid_scope, "id_token_present": id_token_present}
+                "reason": "요청에 nonce를 보냈는데 ID Token이 수신되지 않음.",
+                "remedy": "권한 부여 서버에서 code 교환 시 ID Token을 발급/반환하도록 구성을 점검.",
+                "evidence": {"openid_scope": "openid" in (evidence_fi["scope"] or ""), "id_token_present": False}
             })
+            checklist["B"]["id_token_must_include_nonce_if_requested"] = {"result": "Fail"}
         else:
-            if id_nonce is None:
-                checklist["B"]["id_token_must_include_nonce_if_requested"] = _fail("ID Token에 nonce 없음(N3)")
+            # 단순 존재만 PASS (동등성은 C 섹션에서)
+            try:
+                _, payload = _parse_jwt(idt)
+                has = "nonce" in payload
+            except Exception:
+                has = False
+            checklist["B"]["id_token_must_include_nonce_if_requested"] = {"result": "Pass" if has else "Fail"}
+            if not has:
                 issues.append({
-                    "code": "N3", "level": "FAIL",
+                    "level": "FAIL",
+                    "code": "N3",
                     "title": "ID Token nonce 미포함",
-                    "detail": "ID Token payload에 nonce 클레임이 없습니다.",
-                    "evidence": {"has_req_nonce": True, "flow": flow}
+                    "reason": "요청에 nonce를 보냈다면 ID Token에 nonce 클레임 MUST 포함.",
+                    "remedy": "Authorization Server(ID Token 생성 시) nonce 클레임 포함.",
+                    "evidence": {"id_token_has_nonce": has}
                 })
-            else:
-                checklist["B"]["id_token_must_include_nonce_if_requested"] = _pass()
     else:
-        checklist["B"]["id_token_must_include_nonce_if_requested"] = _pass()
+        checklist["B"]["id_token_must_include_nonce_if_requested"] = {"result": "N/A"}
 
-    # === C. Client Validation ===
-    if req_nonce and (id_nonce is not None):
-        if str(req_nonce) == str(id_nonce):
-            checklist["C"]["nonce_equality_validation"] = _pass()
+    # C. Client Validation
+    # nonce equality
+    if req_nonce and idt:
+        try:
+            _, payload = _parse_jwt(idt)
+            idt_nonce = payload.get("nonce")
+        except Exception:
+            idt_nonce = None
+
+        if idt_nonce is None:
+            checklist["C"]["nonce_equality_validation"] = {"result": "Fail"}
+        elif idt_nonce == req_nonce:
+            checklist["C"]["nonce_equality_validation"] = {"result": "Pass"}
         else:
-            checklist["C"]["nonce_equality_validation"] = _fail("요청 nonce ≠ ID Token nonce(N4)")
+            checklist["C"]["nonce_equality_validation"] = {"result": "Fail"}
             issues.append({
-                "code": "N4", "level": "FAIL",
-                "title": "nonce 불일치",
-                "detail": "요청 nonce와 ID Token의 nonce가 다릅니다.",
-                "evidence": {"req_nonce_sample": str(req_nonce)[:8], "id_nonce_sample": str(id_nonce)[:8]}
+                "level": "FAIL",
+                "code": "N4",
+                "title": "ID Token nonce 불일치",
+                "reason": "요청의 nonce와 ID Token의 nonce가 동일해야 함.",
+                "remedy": "콜백에서 세션 저장 값과 ID Token nonce를 동등 비교하여 불일치 시 거부.",
+                "evidence": {"request_nonce": req_nonce, "id_token_nonce": idt_nonce}
             })
     else:
-        checklist["C"]["nonce_equality_validation"] = _na()
+        checklist["C"]["nonce_equality_validation"] = {"result": "N/A"}
 
-    if req_nonce and previous_nonces:
-        if str(req_nonce) in {str(x) for x in previous_nonces}:
-            checklist["C"]["nonce_replay_rejection"] = _fail("같은 nonce 재관측(N6)")
+    # nonce replay (이전 관측 목록과 비교)
+    prev = set(_previous_nonces(bundle))
+    if req_nonce:
+        if req_nonce in prev:
+            checklist["C"]["nonce_replay_rejection"] = {"result": "Fail"}
             issues.append({
-                "code": "N6", "level": "FAIL",
-                "title": "nonce 재사용(Re-Use)",
-                "detail": "같은 nonce가 재관측되었습니다(Re-Play 의심).",
-                "evidence": {"req_nonce_sample": str(req_nonce)[:8], "previous_count": len(previous_nonces)}
+                "level": "FAIL",
+                "code": "N6",
+                "title": "nonce 재사용 탐지",
+                "reason": "이전에 관측된 nonce가 재사용됨(재생 공격 가능).",
+                "remedy": "nonce를 1회용으로 저장하고 사용 후 즉시 폐기.",
+                "evidence": {"reused": True}
             })
         else:
-            checklist["C"]["nonce_replay_rejection"] = _pass()
+            checklist["C"]["nonce_replay_rejection"] = {"result": "Pass"}
     else:
-        checklist["C"]["nonce_replay_rejection"] = _pass() if req_nonce else _na()
+        checklist["C"]["nonce_replay_rejection"] = {"result": "N/A"}
 
-    # ---- Discovery-aware checks ----
-    # iss consistency
-    if id_payload.get("iss") is None:
-        checklist["C"]["iss_matches_discovery"] = _fail("ID Token에 iss 없음")
-        issues.append({
-            "code": "D1", "level": "FAIL",
-            "title": "iss 누락",
-            "detail": "ID Token에 iss 클레임이 없습니다.",
-        })
-    else:
-        if issuer_expected:
-            if str(id_payload["iss"]) == str(issuer_expected):
-                checklist["C"]["iss_matches_discovery"] = _pass()
-            else:
-                checklist["C"]["iss_matches_discovery"] = _fail("ID Token iss가 discovery와 불일치")
+    # iss/aud/alg/kid 연계
+    disc = _discovery(bundle)
+    jwks = _jwks(bundle)
+
+    if idt:
+        try:
+            header, payload = _parse_jwt(idt)
+        except Exception:
+            header, payload = {}, {}
+
+        # iss
+        iss = payload.get("iss")
+        if disc.get("issuer") and iss:
+            checklist["C"]["iss_matches_discovery"] = {
+                "result": "Pass" if iss == disc["issuer"] else "Fail",
+                "issuer": iss
+            }
+            if iss != disc["issuer"]:
                 issues.append({
-                    "code": "D1", "level": "FAIL",
-                    "title": "iss 불일치",
-                    "detail": "ID Token의 iss가 discovery/openid-configuration의 issuer와 다릅니다.",
-                    "evidence": {"id_iss": id_payload.get("iss"), "expected_iss": issuer_expected}
+                    "level": "FAIL",
+                    "code": "D1",
+                    "title": "iss 누락/불일치",
+                    "reason": "ID Token의 iss가 discovery.issuer와 불일치.",
+                    "remedy": "issuer 값을 discovery와 동일하게 설정하고 불일치 시 오류 처리.",
+                    "evidence": {"iss": iss, "discovery.issuer": disc.get("issuer")}
                 })
         else:
-            checklist["C"]["iss_matches_discovery"] = _na()
+            checklist["C"]["iss_matches_discovery"] = {"result": "N/A"}
 
-    # aud includes client_id
-    if client_id and id_payload.get("aud") is not None:
-        aud = id_payload["aud"]
-        ok_aud = (aud == client_id) or (isinstance(aud, list) and client_id in aud)
-        if ok_aud:
-            checklist["C"]["aud_includes_client"] = _pass()
+        # aud
+        aud = payload.get("aud")
+        cid = _client_id(bundle)
+        aud_ok = False
+        if aud and cid:
+            if isinstance(aud, list):
+                aud_ok = cid in aud
+            else:
+                aud_ok = (cid == aud)
+            checklist["C"]["aud_includes_client"] = {"result": "Pass" if aud_ok else "Fail"}
         else:
-            checklist["C"]["aud_includes_client"] = _fail("aud에 client_id 없음")
-            issues.append({
-                "code": "D2", "level": "FAIL",
-                "title": "aud 불일치",
-                "detail": "ID Token aud가 요청 client_id를 포함하지 않습니다.",
-                "evidence": {"aud": aud, "client_id": client_id}
-            })
-    else:
-        checklist["C"]["aud_includes_client"] = _na()
+            checklist["C"]["aud_includes_client"] = {"result": "N/A"}
 
-    # header alg supported?
-    supported_algs = set((discovery.get("id_token_signing_alg_values_supported") or [])) if isinstance(discovery, dict) else set()
-    alg = (id_header or {}).get("alg")
-    if id_token_present and alg:
-        if supported_algs and alg not in supported_algs:
-            checklist["C"]["alg_supported_by_discovery"] = _fail("discovery가 허용하지 않은 alg")
-            issues.append({
-                "code": "D3", "level": "FAIL",
-                "title": "alg 미지원",
-                "detail": "ID Token header.alg가 discovery에서 선언된 목록에 없습니다.",
-                "evidence": {"alg": alg, "supported": sorted(list(supported_algs))[:5]}
-            })
+        # alg
+        alg = header.get("alg")
+        supported = disc.get("id_token_signing_alg_values_supported")
+        if alg and isinstance(supported, list):
+            checklist["C"]["alg_supported_by_discovery"] = {
+                "result": "Pass" if alg in supported else "Fail",
+                "alg": alg
+            }
         else:
-            checklist["C"]["alg_supported_by_discovery"] = _pass()
-    else:
-        checklist["C"]["alg_supported_by_discovery"] = _na()
+            checklist["C"]["alg_supported_by_discovery"] = {"result": "N/A"}
 
-    # kid in JWKS?
-    kid = (id_header or {}).get("kid")
-    if kid and jwks:
-        known_kids = {k.get("kid") for k in jwks if k.get("kid")}
-        if kid in known_kids:
-            checklist["C"]["kid_found_in_jwks"] = _pass()
+        # kid
+        kid = header.get("kid")
+        if kid and isinstance(jwks.get("keys"), list):
+            found = any(k.get("kid") == kid for k in jwks["keys"])
+            checklist["C"]["kid_found_in_jwks"] = {"result": "Pass" if found else "Fail"}
         else:
-            checklist["C"]["kid_found_in_jwks"] = _fail("JWKS에 kid 없음")
-            issues.append({
-                "code": "D4", "level": "FAIL",
-                "title": "kid 미발견",
-                "detail": "ID Token header.kid가 JWKS keys에 존재하지 않습니다.",
-                "evidence": {"kid": kid, "jwks_kids_count": len(known_kids)}
-            })
+            checklist["C"]["kid_found_in_jwks"] = {"result": "N/A"}
     else:
-        checklist["C"]["kid_found_in_jwks"] = _na()
+        for k in ["iss_matches_discovery", "aud_includes_client", "alg_supported_by_discovery", "kid_found_in_jwks"]:
+            checklist["C"][k] = {"result": "N/A"}
 
-    # Advisories
-    if not req.get("code_challenge_method") and flow == "code":
-        issues.append({"code":"A1","level":"ADVISORY","title":"PKCE 미사용 추정",
-                       "detail":"code_challenge_method가 없어 PKCE 미사용으로 추정됩니다."})
+    # Advisory: PKCE
+    params = _get(bundle, "authorization_request", "params", default={}) or {}
+    cc = params.get("code_challenge")
+    ccm = params.get("code_challenge_method")
+    if cc is None or (ccm or "").upper() != "S256":
+        issues.append({
+            "level": "ADVISORY",
+            "code": "A1",
+            "title": "PKCE 미사용 추정",
+            "reason": "코드 플로우는 PKCE(S256) 사용이 안전합니다.",
+            "remedy": "code_challenge(S256)/code_verifier 사용.",
+            "evidence": {"code_challenge": bool(cc), "code_challenge_method": ccm}
+        })
 
-    # Final label
+    # Overall
     label = "PASS"
-    for it in issues:
-        if it["level"] == "FAIL":
-            label = "FAIL"; break
-        if it["level"] == "ADVISORY":
-            label = "ADVISORY"
-    ok = (label == "PASS")
+    if any(i["level"] == "FAIL" for i in issues):
+        label = "FAIL"
+    elif any(i["level"] == "ADVISORY" for i in issues):
+        label = "ADVISORY"
 
-    result = {
-        "ok": ok,
+    return {
         "label": label,
         "flow_type": flow,
-        "issues": issues,
-        "checklist": checklist,
-        "stats": stats,
-        "policy": {"strict_code_nonce": strict_code_nonce, "min_total_bits": min_total_bits}
+        "checklist": {
+            "A": checklist["A"],
+            "B": checklist["B"],
+            "C": checklist["C"],
+        },
+        "issues": issues
     }
-    return result
 
-# ---- Pretty report ----
 def pretty_report(res: Dict[str, Any]) -> str:
-    j = res
-    out = []
-    out.append("===== REPORT =====\n")
-    out.append(f"Flow: {j.get('flow_type')}  Overall: {'PASS' if j.get('ok') else j.get('label')}\n")
-
-    def dump_section(name, sec):
-        out.append(f"== {name} ==")
-        for k, v in sec.items():
-            if v.get("result") == "Info":
-                continue
-            out.append(f"- {k}: {v.get('result')}")
-            note = v.get("note") or v.get("observed")
-            if note and v.get("result") != "Info":
-                out.append(f"  • {note}")
-        out.append("")
-
-    dump_section("A. Authorization Request", j["checklist"]["A"])
-    dump_section("B. ID Token", j["checklist"]["B"])
-    dump_section("C. Client Validation", j["checklist"]["C"])
-
-    fails = [x for x in j.get("issues", []) if x.get("level") == "FAIL"]
-    advis = [x for x in j.get("issues", []) if x.get("level") == "ADVISORY"]
-
+    """사람이 읽기 좋은 텍스트 리포트."""
+    out: List[str] = []
+    out.append("===== REPORT =====")
+    out.append("")
+    out.append(f"Flow: {res.get('flow_type')}   Overall: {res.get('label')}")
+    out.append("")
+    # A
+    out.append("== A. Authorization Request ==")
+    for k in ["flow_identify", "nonce_used_in_codeflow", "nonce_entropy_freshness"]:
+        item = res["checklist"]["A"].get(k)
+        if item:
+            if k == "flow_identify":
+                out.append(f"- {k}: {item['result']}")
+                out.append(f"  • {item['evidence']}")
+            else:
+                out.append(f"- {k}: {item['result']}")
+    out.append("")
+    # B
+    out.append("== B. ID Token ==")
+    for k in ["id_token_must_include_nonce_if_requested"]:
+        item = res["checklist"]["B"].get(k)
+        if item:
+            out.append(f"- {k}: {item['result']}")
+    out.append("")
+    # C
+    out.append("== C. Client Validation ==")
+    for k in [
+        "nonce_equality_validation",
+        "nonce_replay_rejection",
+        "iss_matches_discovery",
+        "aud_includes_client",
+        "alg_supported_by_discovery",
+        "kid_found_in_jwks",
+    ]:
+        item = res["checklist"]["C"].get(k)
+        if item:
+            out.append(f"- {k}: {item['result']}")
+    out.append("")
+    # Failures / Advisories
+    fails = [i for i in res["issues"] if i["level"] == "FAIL"]
+    advis = [i for i in res["issues"] if i["level"] == "ADVISORY"]
     if fails:
         out.append("Failures:")
         for f in fails:
             out.append(f" - [{f['code']}] {f['title']}")
-            ev = f.get("evidence")
-            if ev:
-                safe = {}
-                for k, v in ev.items():
-                    val = str(v)
-                    safe[k] = val[:64] + ('…' if len(val) > 64 else '')
-                out.append(f"    - 증거: {json.dumps(safe, ensure_ascii=False)}")
+            out.append(f"   - 이유: {f['reason']}")
+            out.append(f"   - 조치: {f['remedy']}")
+            if f.get("evidence") is not None:
+                out.append(f"   - 증거: {f['evidence']}")
         out.append("")
     if advis:
         out.append("Advisories:")
         for a in advis:
             out.append(f" - [{a['code']}] {a['title']}")
+            out.append(f"   - 이유: {a['reason']}")
+            out.append(f"   - 조치: {a['remedy']}")
         out.append("")
-
     return "\n".join(out)
 
-# --- backward-compat shim for older adapters ---
-def run_checks(flow_bundle, policy=None):
-    return run(flow_bundle, policy=policy)
+def run(bundle: Dict[str, Any]) -> Dict[str, Any]:
+    """run_checks와 동일. (호환용)"""
+    return run_checks(bundle)
+
+# 모듈 단독 실행 (stdin으로 flow_bundle을 받을 때 사용)
+if __name__ == "__main__":
+    import sys
+    try:
+        raw = json.load(sys.stdin)
+    except Exception:
+        sys.stderr.write("Provide a JSON flow bundle via stdin.\n")
+        raise
+    res = run_checks(raw)
+    print(pretty_report(res))

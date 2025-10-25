@@ -1,155 +1,107 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-adapter_to_key_checker.py — KSJ15_vuln용 범용 어댑터 (discovery/JWKS 자동 병합)
+# 입력 경로 고정 + 결과 JSON 한 개만 저장 + 콘솔 리포트 출력
 
-사용법(alg_vuln 폴더에서):
-  python .\adapter_to_key_checker.py ..\session_token.json ^
-    --checker .\vuln_alg_check.py ^
-    --outdir .\out ^
-    --result-prefix alg_check_result
+import json, os, importlib.util, datetime, sys
+from pathlib import Path
+from typing import Optional, Dict, Any
 
-동작:
-- <input_json>을 로드하고, 같은 폴더에 있으면 아래 파일을 자동 병합:
-    openid_configuration.json -> raw["discovery"]
-    jwks.json                 -> raw["jwks"]
-    summary.json              -> raw["discovery_summary"]
-- 병합된 dict을 체크 모듈(run_checks)에 전달
-- 콘솔 리포트 + --outdir에 결과 3종 저장:
-    1) flow_from_session.json
-    2) <prefix>.txt
-    3) <prefix>.json
-"""
-from __future__ import annotations
-import argparse, importlib.util, json, os, sys
-from datetime import datetime, timezone
+HERE = Path(__file__).resolve().parent            # ...\checker_tool\alg_vuln
+ROOT = HERE.parent.parent                         # ...\OAuthTool
 
-def _load_json_if_exists(path: str):
+# === 기본 입력 경로(요청 반영) ===
+DEFAULT_SESSION   = ROOT / "proxy_artifacts"      / "session_token.json"
+DEFAULT_DISCOVERY = ROOT / "discovery_artifacts"  / "openid_configuration.json"
+DEFAULT_JWKS      = ROOT / "discovery_artifacts"  / "jwks.json"
+
+# === 출력(단일 파일) ===
+DEFAULT_OUTDIR  = ROOT / "module_reports"
+DEFAULT_OUTFILE = "alg_check_result.json"
+
+def _load_json(path: Path) -> Dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def _try_load(path: Path) -> Optional[Dict[str, Any]]:
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return None
+        if path.exists():
+            return _load_json(path)
+    except Exception:
+        pass
+    return None
 
-def _merge_discovery(raw: dict, base_dir: str):
-    oc_path = os.path.join(base_dir, "openid_configuration.json")
-    jwks_path = os.path.join(base_dir, "jwks.json")
-    summary_path = os.path.join(base_dir, "summary.json")
+def prepare_flow_bundle_from_files(session_path: Optional[str|os.PathLike]=None,
+                                   discovery_path: Optional[str|os.PathLike]=None,
+                                   jwks_path: Optional[str|os.PathLike]=None) -> Dict[str, Any]:
+    """세션+디스커버리+JWKS 병합해서 FlowBundle(dict) 작성."""
+    session_p   = Path(session_path)   if session_path   else DEFAULT_SESSION
+    discovery_p = Path(discovery_path) if discovery_path else DEFAULT_DISCOVERY
+    jwks_p      = Path(jwks_path)      if jwks_path      else DEFAULT_JWKS
 
-    oc = _load_json_if_exists(oc_path)
-    jwks = _load_json_if_exists(jwks_path)
-    summ = _load_json_if_exists(summary_path)
+    flow = _load_json(session_p)
+    disc = _try_load(discovery_p)
+    if disc: flow["discovery"] = disc
+    jwks = _try_load(jwks_p)
+    if jwks: flow["jwks"] = jwks
 
-    merged = dict(raw)
-    merged.setdefault("_meta", {})["base_dir"] = base_dir
+    flow.setdefault("_meta", {})["ts"] = int(datetime.datetime.utcnow().timestamp())
+    return flow
 
-    # discovery 병합(기존 값이 있으면 덮어쓰지 않음)
-    if oc:
-        if "discovery" not in merged or not isinstance(merged["discovery"], dict):
-            merged["discovery"] = {}
-        for k, v in oc.items():
-            merged["discovery"].setdefault(k, v)
-
-    if jwks:
-        merged["jwks"] = jwks
-    if summ:
-        merged["discovery_summary"] = summ
-
-    return merged, {"openid_configuration": bool(oc), "jwks": bool(jwks), "summary": bool(summ)}
-
-def _load_module_from_path(path: str):
-    spec = importlib.util.spec_from_file_location("ksj_checker_module", path)
+def _load_checker_module(path_or_none: Optional[str] = None):
+    """vuln_alg_check.py 안전 로드 (dataclasses용 sys.modules 선등록)."""
+    if not path_or_none:
+        path_or_none = str(HERE / "vuln_alg_check.py")
+    mod_name = "alg_vuln_checker_runtime"
+    spec = importlib.util.spec_from_file_location(mod_name, path_or_none)
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"Cannot load checker module from: {path}")
-    mod = importlib.util.module_from_spec(spec)
-    # dataclass 등 데코레이터용으로 모듈을 미리 등록
-    sys.modules[spec.name] = mod
-    spec.loader.exec_module(mod)
+        raise RuntimeError(f"cannot import checker module from: {path_or_none}")
+    mod = importlib.util.module_from_spec(spec)  # type: ignore
+    sys.modules[mod_name] = mod                  # ★ 선등록
+    spec.loader.exec_module(mod)                 # type: ignore
     return mod
 
-def _pretty_fallback(result: dict) -> str:
-    lines = []
-    lines.append(f"Flow: {result.get('flow_type')}  Overall: {'PASS' if result.get('ok') else 'FAIL'}\n")
-    for section_name in ("A", "B", "C"):
-        sec = (result.get("checklist") or {}).get(section_name) or {}
-        title = {"A": "A. Section", "B": "B. Section", "C": "C. Section"}[section_name]
-        lines.append(f"== {title} ==")
-        for k, v in sec.items():
-            lines.append(f"- {k}: {v.get('result')}")
-            if "observed" in v and v.get("observed") is not None:
-                lines.append(f"  • {v.get('observed')}")
-            if "note" in v and v.get("note") is not None:
-                lines.append(f"  • {v.get('note')}")
-        lines.append("")
-    if result.get("failures"):
-        lines.append("Failures:")
-        for f in result["failures"]:
-            lines.append(f" - [{f.get('code')}] {f.get('title')} :: {f.get('detail')} :: evidence={f.get('evidence')}")
-        lines.append("")
-    if result.get("warnings"):
-        lines.append("Warnings:")
-        for w in result["warnings"]:
-            lines.append(f" - [{w.get('code')}] {w.get('title')} :: {w.get('detail')} :: evidence={w.get('evidence')}")
-        lines.append("")
-    return "\n".join(lines)
+def run_alg_check(flow_bundle: Dict[str, Any],
+                  checker_path: Optional[str] = None,
+                  policy: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    mod = _load_checker_module(checker_path)
+    if hasattr(mod, "check_alg_vuln"):
+        return mod.check_alg_vuln(flow_bundle, policy=policy)
+    return mod.run_checks(flow_bundle)
+
+def _write_json(path: Path, data: Dict[str, Any]):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("input", help="session_token.json (or compatible)")
-    p.add_argument("--checker", required=True, help="path to checker module (.py)")
-    p.add_argument("--outdir", default="./out", help="output directory (default: ./out)")
-    p.add_argument("--result-prefix", default=None, help="prefix for result files (default: derived from checker name)")
-    args = p.parse_args()
+    import argparse
+    ap = argparse.ArgumentParser(description="ALG vuln adapter (files→bundle→checker)")
+    ap.add_argument("--session",   default=str(DEFAULT_SESSION),   help="session_token.json 경로")
+    ap.add_argument("--discovery", default=str(DEFAULT_DISCOVERY), help="openid_configuration.json 경로")
+    ap.add_argument("--jwks",      default=str(DEFAULT_JWKS),      help="jwks.json 경로")
+    ap.add_argument("--checker",   default=str(HERE / "vuln_alg_check.py"), help="vuln_alg_check.py 경로")
+    ap.add_argument("--outdir",    default=str(DEFAULT_OUTDIR),    help="출력 폴더(기본: module_reports)")
+    # 정책 옵션(선택)
+    ap.add_argument("--no-found", action="store_true", help="found_jwts 제외")
+    ap.add_argument("--issuer",   default=None,        help="발급자(iss) 필터")
+    args = ap.parse_args()
 
-    # 입력 + discovery 병합 (입력 JSON 파일이 있는 폴더 기준)
-    with open(args.input, "r", encoding="utf-8") as f:
-        raw = json.load(f)
-    base_dir = os.path.abspath(os.path.dirname(args.input))
-    merged, merged_flags = _merge_discovery(raw, base_dir)
+    flow = prepare_flow_bundle_from_files(args.session, args.discovery, args.jwks)
+    policy = {"include_found": not args.no_found, "issuer_filter": args.issuer}
 
-    # 타임스탬프
-    utc_now = datetime.now(timezone.utc)
-    meta = {"UTC": utc_now.isoformat(), "ts": int(utc_now.timestamp()), "merged": merged_flags}
+    # 검사 실행
+    mod = _load_checker_module(args.checker)
+    result = run_alg_check(flow, checker_path=args.checker, policy=policy)
 
-    # 출력 폴더
-    os.makedirs(args.outdir, exist_ok=True)
-
-    # 병합 입력 저장
-    flow_path = os.path.join(args.outdir, "flow_from_session.json")
-    with open(flow_path, "w", encoding="utf-8") as f:
-        json.dump({"meta": meta, "flow": merged}, f, ensure_ascii=False, indent=2, sort_keys=True)
-    print(f"[+] saved: {os.path.relpath(flow_path)}")
-    if any(merged_flags.values()):
-        enabled = ", ".join([k for k, v in merged_flags.items() if v])
-        print(f"[i] merged discovery files: {enabled}")
-
-    # 체크 모듈 실행
-    mod = _load_module_from_path(args.checker)
-    if not hasattr(mod, "run_checks"):
-        print("[!] Checker module has no run_checks(raw) function", file=sys.stderr)
-        sys.exit(2)
-    result = mod.run_checks(merged)
-
-    # 리포트 출력/저장
-    report_txt = mod.pretty_report(result) if hasattr(mod, "pretty_report") else _pretty_fallback(result)
-    prefix = args.result_prefix or f"{os.path.splitext(os.path.basename(args.checker))[0]}_result"
-
-    txt_path = os.path.join(args.outdir, f"{prefix}.txt")
-    with open(txt_path, "w", encoding="utf-8") as f:
-        f.write("===== REPORT =====\n\n")
-        f.write(report_txt)
-        if not report_txt.endswith("\n"):
-            f.write("\n")
-    print(f"[+] saved: {os.path.relpath(txt_path)}")
-
-    json_path = os.path.join(args.outdir, f"{prefix}.json")
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False, indent=2, sort_keys=True)
-    print(f"[+] saved: {os.path.relpath(json_path)}")
-
-    # 콘솔 미러
+    # 콘솔에 예쁜 리포트 출력
+    report_txt = mod.pretty_report(result)
     print("\n===== REPORT =====\n")
     print(report_txt)
+
+    # 단일 JSON 저장
+    out_path = Path(args.outdir) / DEFAULT_OUTFILE
+    _write_json(out_path, result)
+    print(f"[OK] saved result → {out_path}")
 
 if __name__ == "__main__":
     main()

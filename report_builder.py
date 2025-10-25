@@ -1,97 +1,104 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-OAuth Vulnerability Checker - 자동 스캔 보고서 생성기 (severity.txt 기반, 증거/비고 중복 제거)
-- severity.txt: 기본 ./severity/severity.txt (없으면 전체 High)
+OAuth Vulnerability Checker - 자동 스캔 보고서 생성기
+- check.txt: 점검 항목 정의를 자동 파싱(섹션/그룹/한글명(영문키))
 - module_reports: ./module_reports (재귀 스캔)
+- severity.txt: 기본 ./severity/severity.txt (없으면 전체 High)
 - 보고서: ./reports/OAuth_Report_YYYYMMDD_HHMMSS.html
-- 브라우저는 기본 자동 오픈
-- 대상 URL은 옵션으로 입력 (--target 또는 --target-url)
+- 브라우저 자동 오픈
+- 대상 URL 옵션 (--target 또는 --target-url)
+- 결과 구분: Pass / Fail / N/A(모듈이 실제 N/A로 보고) / NR(어떤 산출물에도 해당 키가 없음)
 """
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
-import json, re, webbrowser, argparse
+import json, re, webbrowser, argparse, sys
 
-# ===== check.txt 기반 하드코딩 항목 (누락 없이) =====
-CHECK_ITEMS = [
-  {"section":"Client Secret","group":"Client Secret","title_ko":"URL에 클라이언트 시크릿 노출 여부 검사","key":"Client Secret Query"},
-  {"section":"Client Secret","group":"Client Secret","title_ko":"Referer 헤더 내 클라이언트 시크릿 포함 여부 검사","key":"Client Secret Referer"},
-  {"section":"Client Secret","group":"Client Secret","title_ko":"클라이언트 시크릿 전송 시 https 사용 확인","key":"Token Body Secret"},
-  {"section":"Client Secret","group":"Client Secret","title_ko":"세션 및 토큰 내 클라이언트 시크릿 존재 검사","key":"Session token secret"},
+# =========================
+# 1) check.txt 자동 파싱
+# =========================
+CHECK_TXT_DEFAULT = "./check.txt"
 
-  {"section":"STATE","group":"STATE","title_ko":"인가 요청 내 STATE 존재 확인","key":"State Missing"},
-  {"section":"STATE","group":"STATE","title_ko":"STATE 엔트로피 검증","key":"State Low Entropy"},
-  {"section":"STATE","group":"STATE","title_ko":"인가 요청시 STATE 재사용 가능 여부 검사","key":"State Reuse"},
-  {"section":"STATE","group":"STATE","title_ko":"콜백 STATE 누락 검사","key":"Callback State Missing"},
-  {"section":"STATE","group":"STATE","title_ko":"콜백 STATE 불일치 검사","key":"Callback State Mismatch"},
+def _read_text(path: Path) -> str:
+    for enc in ("utf-8-sig", "utf-8", "cp949", "euc-kr"):
+        try:
+            return path.read_text(encoding=enc)
+        except Exception:
+            continue
+    return path.read_text()
 
-  {"section":"Scope","group":"Scope 처리","title_ko":"인가 요청 중 과도한 혹은 민감한 스코프 감지","key":"Risky Scope"},
-  {"section":"Scope","group":"Scope 처리","title_ko":"최소권한 원칙 준수 확인","key":"Least Privilege"},
+def load_checks_from_checktxt(check_file: Path) -> list[dict]:
+    """
+    check.txt 포맷(탭/스페이스 혼용 허용):
+    Section
+        Group
+            한글 취약점명 (EnglishKey)
+    """
+    if not check_file.exists():
+        print(f"[WARN] check.txt가 보이지 않습니다: {check_file} → 산출물의 키로 임시 목록을 구성합니다.", file=sys.stderr)
+        return []
 
-  {"section":"OIDC nonce","group":"Authorization Redirect","title_ko":"https 사용 확인","key":"redirect_uri_safety"},
-  {"section":"OIDC nonce","group":"Authorization Redirect","title_ko":"get 방식 사용 검사","key":"form_post_used"},
-  {"section":"OIDC nonce","group":"Authorization Redirect","title_ko":"인가코드 응답에 iss 사용 확인","key":"iss_in_authorization_response"},
-  {"section":"OIDC nonce","group":"Authorization Redirect","title_ko":"iss 값, discovery와 매치 확인","key":"state_presence"},
+    lines = _read_text(check_file).splitlines()
+    section = group = None
+    items: list[dict] = []
+    rx_item = re.compile(r'^\s*(?P<title>.+?)\s*\((?P<key>[^)]+)\)\s*$')
 
-  {"section":"OIDC nonce","group":"PKCE & token binding","title_ko":"PKCE 의 S256 (이상) 사용 확인","key":"pkce_s256_in_request"},
-  {"section":"OIDC nonce","group":"PKCE & token binding","title_ko":"PKCE 사용 시, 토큰 코드검증 여부 확인","key":"token_has_code_verifier"},
+    def indent_level(s: str) -> int:
+        # 탭=1레벨, 4 spaces=1레벨로 취급
+        if not s:
+            return 0
+        leading = len(s) - len(s.lstrip(' \t'))
+        tabs = len(s) - len(s.lstrip('\t'))
+        spaces = leading - tabs
+        return tabs + (spaces // 4)
 
-  {"section":"OIDC nonce","group":"Leakage & hardening","title_ko":"프론트 채널 인가코드 노출 검사","key":"front_channel_leak_risk"},
-  {"section":"OIDC nonce","group":"Leakage & hardening","title_ko":"referer 노출 검사","key":"referer_leak_risk"},
-  {"section":"OIDC nonce","group":"Leakage & hardening","title_ko":"jar par 사용여부 검사","key":"jar_par_usage"},
+    for raw in lines:
+        line = raw.rstrip()
+        if not line.strip() or line.strip() == "...":
+            continue
+        lvl = indent_level(line)
+        text = line.strip()
+        if lvl == 0:
+            section = text
+        elif lvl == 1:
+            group = text
+        else:
+            m = rx_item.match(text)
+            if not m:
+                # 아이템 형식이 아니면 무시
+                continue
+            title_ko = m.group("title").strip()
+            key = m.group("key").strip()
+            items.append({"section": section or "", "group": group or "", "title_ko": title_ko, "key": key})
+    return items
 
-  {"section":"OIDC nonce","group":"Authorize 요청","title_ko":"nonce 존재 확인","key":"nonce_used_in_codeflow"},
-  {"section":"OIDC nonce","group":"Authorize 요청","title_ko":"nonce 엔트로피/신선도 검증","key":"nonce_entropy_freshness"},
+# =========================
+# 2) 키 정규화(불일치 보정)
+# =========================
+KEY_ALIAS_INCOMING_TO_CANON = {
+    # authcode_report checklist 등 변형 보정
+    "redirect_uri_present": "redirect_uri_presence",
+    "state_present": "state_presence",
+    "token_resent_redirect_uri": "token_redirect_match",
+    "token_redirect_uri_match": "token_redirect_match",
+    "iss_in_response": "iss_in_authorization_response",
+}
 
-  {"section":"OIDC nonce","group":"ID Token","title_ko":"요청에 nonce 존재 시, ID Token nonce 포함 확인","key":"id_token_must_include_nonce_if_requested"},
-  {"section":"OIDC nonce","group":"ID Token","title_ko":"ID Token 의 iss, aud, exp 유효성 검사","key":"iss_aud_exp_valid"},
+def _canon_key(k: str) -> str:
+    if not k:
+        return k
+    return KEY_ALIAS_INCOMING_TO_CANON.get(k, k)
 
-  {"section":"Authorization Code","group":"Authorization Endpoint","title_ko":"인가요청에 response_type=code 확인","key":"response_type_code"},
-  {"section":"Authorization Code","group":"Authorization Endpoint","title_ko":"인가요청에 scope 존재 확인","key":"scope_presence"},
-  {"section":"Authorization Code","group":"Authorization Endpoint","title_ko":"인가요청에 client_id 존재 확인","key":"client_id_presence"},
-  {"section":"Authorization Code","group":"Authorization Endpoint","title_ko":"인가요청에 redirect_uri 존재 확인","key":"redirect_uri_presence"},
-  {"section":"Authorization Code","group":"Authorization Endpoint","title_ko":"인가요청에 state 존재 확인","key":"state_presence"},
-  {"section":"Authorization Code","group":"Authorization Endpoint","title_ko":"인가코드 응답의 code 파라미터 존재 확인","key":"code_presence"},
-  {"section":"Authorization Code","group":"Authorization Endpoint","title_ko":"인가코드 응답이 HTTPS 로 전달 확인","key":"https_callback"},
-
-  {"section":"Authorization Code","group":"Token Endpoint","title_ko":"인가코드 교환 시 grant_type=authorization_code 확인","key":"grant_type_auth_code"},
-  {"section":"Authorization Code","group":"Token Endpoint","title_ko":"인가코드 교환 시 client_id 존재 확인","key":"token_client_id_presence"},
-  {"section":"Authorization Code","group":"Token Endpoint","title_ko":"인가코드 교환 시 client_secret 존재 여부 검사","key":"token_client_secret_presence"},
-  {"section":"Authorization Code","group":"Token Endpoint","title_ko":"인가코드 교환 시 redirect_uri 일치 확인","key":"token_redirect_match"},
-  {"section":"Authorization Code","group":"Token Endpoint","title_ko":"인가코드 교환 시 code 정상성 검사","key":"token_code_valid"},
-
-  {"section":"Token","group":"ID Token","title_ko":"iss 값, discovery와 매치 확인","key":"iss_matches_discovery"},
-  {"section":"Token","group":"ID Token","title_ko":"aud 에 클라이언트가 포함되는지 확인","key":"aud_includes_client"},
-  {"section":"Token","group":"ID Token","title_ko":"alg 가 discovery 내 지원 알고리즘인지 확인","key":"alg_supported_by_discovery"},
-  {"section":"Token","group":"ID Token","title_ko":"kid 가 discovery JWKS 내 존재 확인","key":"kid_found_in_jwks"},
-
-  {"section":"Key Rotation & JWKS","group":"Resource Server","title_ko":"액세스토큰 내 KID, JWKS 키 일치 여부 확인","key":"kid_known_access_token"},
-  {"section":"Key Rotation & JWKS","group":"Resource Server","title_ko":"액세스토큰 KID 용도 검사","key":"kid_use_sig_access_token"},
-  {"section":"Key Rotation & JWKS","group":"Resource Server","title_ko":"액세스토큰 헤더의 외부키 참조 금지 여부 확인","key":"header_external_ref_access_token"},
-  {"section":"Key Rotation & JWKS","group":"Resource Server","title_ko":"액세스토큰 KID 패턴 확인","key":"kid_pattern_access_token"},
-
-  {"section":"Key Rotation & JWKS","group":"RS 설정","title_ko":"RS 가 JWKS 캐시 TTL 관리 여부 확인","key":"rs_jwks_cache_ttl"},
-  {"section":"Key Rotation & JWKS","group":"RS 설정","title_ko":"RS 가 키 롤오버 전략 수립 여부 확인","key":"rs_key_rollover_plan"},
-
-  {"section":"Key Rotation & JWKS","group":"보안 테스트","title_ko":"알려지지 않은 KID 주입 공격","key":"inject_unknown_kid"},
-  {"section":"Key Rotation & JWKS","group":"보안 테스트","title_ko":"헤더 인젝션 공격","key":"header_injection_fields_seen"},
-  {"section":"Key Rotation & JWKS","group":"보안 테스트","title_ko":"HS RS 변경 공격","key":"hs_rs_switch"},
-  {"section":"Key Rotation & JWKS","group":"보안 테스트","title_ko":"KID Traversal","key":"kid_traversal"}
-]
-
-# -----------------------
-# 공통 유틸 (중복 제거용)
-# -----------------------
+# =========================
+# 3) 공통 유틸
+# =========================
 def _dedup_keep_order(seq, keyfunc=lambda x: x):
-    seen = set()
-    out = []
+    seen = set(); out = []
     for x in seq:
         k = keyfunc(x)
-        if k in seen:
-            continue
-        seen.add(k)
-        out.append(x)
+        if k in seen: continue
+        seen.add(k); out.append(x)
     return out
 
 def _norm_text(s: str) -> str:
@@ -103,55 +110,34 @@ def _norm_text(s: str) -> str:
 def _norm_evidence(ev) -> str:
     if ev is None: return ""
     if isinstance(ev, (dict, list)):
-        try:
-            s = json.dumps(ev, ensure_ascii=False, sort_keys=True)
-        except Exception:
-            s = str(ev)
+        try: s = json.dumps(ev, ensure_ascii=False, sort_keys=True)
+        except Exception: s = str(ev)
     else:
         s = str(ev)
     s = s.replace("\r\n", "\n").strip()
     s = re.sub(r"\s+", " ", s)
     return s
 
-# -----------------------
-# Severity (.txt) 로딩
-# -----------------------
+# =========================
+# 4) Severity(.txt) 로딩
+# =========================
 _SEV_CODE_MAP = {"HIGH":"High", "MID":"Middle", "LOW":"Low"}
 
-def _read_text(path: Path) -> str:
-    for enc in ("utf-8-sig", "utf-8", "cp949", "euc-kr"):
-        try:
-            return path.read_text(encoding=enc)
-        except Exception:
-            continue
-    return path.read_text()
-
 def load_severity_from_txt(severity_file: Path | None) -> dict:
-    """
-    severity.txt 포맷:
-      HIGH    한글 취약점명 (EnglishKey)
-      MID     ...
-      LOW     ...
-    결과 키는 '한글 취약점명' 기준으로 반환
-    """
     default = defaultdict(lambda: "High")  # 파일 없으면 전부 High
     if not severity_file or not severity_file.exists():
         return default
-
     text = _read_text(severity_file)
     m = {}
     rx = re.compile(r'^\s*(HIGH|MID|LOW)\s+(.+?)\s*\(([^)]+)\)\s*$', re.IGNORECASE)
     for line in text.splitlines():
         line = line.strip()
-        if not line or line.startswith("#"):
-            continue
+        if not line or line.startswith("#"): continue
         mo = rx.match(line)
-        if not mo:
-            continue
-        sev_raw, title_ko, eng_key = mo.groups()
+        if not mo: continue
+        sev_raw, title_ko, _eng_key = mo.groups()
         sev = _SEV_CODE_MAP.get(sev_raw.upper(), "High")
         m[title_ko.strip()] = sev
-        # 필요 시 영어 키도 동일 세버리티로: m[eng_key.strip()] = sev
     if not m:
         return default
     out = defaultdict(lambda: "Low")
@@ -159,50 +145,35 @@ def load_severity_from_txt(severity_file: Path | None) -> dict:
     return out
 
 def resolve_severity_file(user_supplied: str | Path | None) -> Path | None:
-    """
-    우선순위:
-    1) 사용자가 넘긴 severity.txt 경로
-    2) ./severity/severity.txt
-    3) ./severity/ 하위 *.txt 중 'severity' 패턴 우선
-    4) 없으면 None (→ 전체 High)
-    """
     if user_supplied:
         p = Path(user_supplied)
-        if p.exists():
-            return p
-
+        if p.exists(): return p
     p = Path("./severity/severity.txt")
-    if p.exists():
-        return p
-
+    if p.exists(): return p
     sev_dir = Path("./severity")
     if sev_dir.exists():
         patterns = ["severity*.txt", "*severity*.txt", "*.txt"]
         for pat in patterns:
             for cand in sorted(sev_dir.rglob(pat)):
                 return cand
-
     return None  # None이면 전체 High
 
-# -----------------------
-# 모듈 산출물 파싱 (재귀형)
-# -----------------------
+# =========================
+# 5) 모듈 산출물 파싱(재귀)
+# =========================
 def _norm_result(val: str) -> str:
     s = (val or "").strip().upper()
     if s in ("PASS", "OK", "TRUE"): return "Pass"
     if s in ("FAIL", "VULN", "FALSE"): return "Fail"
+    if s in ("NA", "N/A", "NOT APPLICABLE", "UNKNOWN"): return "N/A"
     return "N/A"
 
-def _extract_results(path: Path):
+def _extract_results(path: Path) -> dict:
     """
-    어디에 있든 다음 패턴을 모두 수집:
-      - groups.*.checks[]   → title/result/description/evidence
-      - (중첩 허용) checklist → 각 항목 result/note/observed/evidence
-      - (중첩 허용) failures/warnings/issues 배열 → code/title/detail/evidence
-    key 매핑:
-      - checks[].title (또는 id/key) → 예: "Client Secret Query"
-      - checklist.* 의 항목 키 → 예: "redirect_uri_safety"
-      - failures... → code 또는 title
+    어디에 있든 다음을 모두 수집:
+      - groups.*.checks[] → title/result/description/recommendation/evidence
+      - checklist         → 각 항목 result/note/observed/evidence (중첩 허용)
+      - failures/warnings/issues → code/title/detail/evidence (중첩 허용)
     """
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -212,8 +183,8 @@ def _extract_results(path: Path):
     results = defaultdict(list)
 
     def add(key, res, note=None, observed=None, evidence=None):
-        if not key:
-            return
+        if not key: return
+        key = _canon_key(key)
         results[key].append({
             "result": _norm_result(res),
             "note": note or "",
@@ -224,7 +195,7 @@ def _extract_results(path: Path):
 
     def walk(node):
         if isinstance(node, dict):
-            # 1) groups.*.checks[] (oauth_report, combined_* 등)
+            # 1) groups.*.checks[]
             grp = node.get("groups")
             if isinstance(grp, dict):
                 for g in grp.values():
@@ -233,15 +204,19 @@ def _extract_results(path: Path):
                         for c in checks:
                             title = c.get("title") or c.get("id") or c.get("key")
                             res = c.get("result")
-                            add(title, res, note=c.get("description") or c.get("detail"),
-                                evidence=c.get("evidence"))
+                            extra = []
+                            if c.get("description"):    extra.append(str(c["description"]))
+                            if c.get("recommendation"): extra.append("Recommendation: " + str(c["recommendation"]))
+                            if c.get("full_title"):     extra.append("Full: " + str(c["full_title"]))
+                            note = " | ".join(extra) if extra else None
+                            add(title, res, note=note, observed=c.get("observed"), evidence=c.get("evidence"))
 
-            # 2) checklist (중첩 허용: authcode_report, nonce_check_result, key_rotation_check_result 등)
+            # 2) checklist (중첩 허용)
             cl = node.get("checklist")
             if isinstance(cl, dict):
-                for cat in cl.values():  # "A","B","C" 같은 그룹
+                for cat in cl.values():
                     if isinstance(cat, dict):
-                        for k, v in cat.items():  # k: "redirect_uri_safety" 등
+                        for k, v in cat.items():
                             if isinstance(v, dict) and "result" in v:
                                 add(
                                     k, v.get("result"),
@@ -257,9 +232,9 @@ def _extract_results(path: Path):
                     for it in arr:
                         key = it.get("code") or it.get("title") or ""
                         res = "Fail" if arr_key == "failures" else "N/A"
-                        add(key, res, note=it.get("detail"), evidence=it.get("evidence"))
+                        add(key, res, note=it.get("detail"), observed=it.get("observed"), evidence=it.get("evidence"))
 
-            # 4) 다른 자식도 재귀 탐색
+            # 4) 기타 자식 재귀
             for k, v in node.items():
                 if k not in ("groups", "checklist", "failures", "warnings", "issues"):
                     walk(v)
@@ -271,17 +246,20 @@ def _extract_results(path: Path):
     walk(data)
     return results
 
-# -----------------------
-# HTML 빌드 (문자 넘침 방지 포함)
-# -----------------------
+# =========================
+# 6) HTML 빌드
+# =========================
 def _build_html(rows, summary):
     def esc(s):
         import html
         if s is None: return ""
         return html.escape(str(s))
+
     def pill_result(res):
-        cls = "fail" if res=="Fail" else ("pass" if res=="Pass" else "na")
-        return f'<span class="pill"><span class="dot {cls}"></span> {res}</span>'
+        cls = "fail" if res=="Fail" else ("pass" if res=="Pass" else ("na" if res=="N/A" else "nr"))
+        label = res
+        return f'<span class="pill"><span class="dot {cls}"></span> {label}</span>'
+
     def sev_badge(sv):
         cls = {"High":"high","Middle":"mid","Low":"low"}.get(sv,"low")
         return f'<span class="sev {cls}">{sv}</span>'
@@ -323,12 +301,13 @@ def _build_html(rows, summary):
           {src_html}
         </div>""")
 
+    # NR 포함 KPI 5개
     return f"""<!doctype html>
 <html lang="ko"><head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
 <title>OAuth Vulnerability Checker - 최종 보고서</title>
 <style>
-:root{{ --bg:#0b0c10; --panel:#12131a; --panel-2:#161823; --text:#e7e9ee; --muted:#a7adbd; --border:#2a2f3a; --accent:#6ea8fe; --pass:#22c55e; --fail:#ef4444; --na:#9aa4b2; --high:#ef4444; --mid:#f59e0b; --low:#22c55e; --chip-bg:#1c1f2b; }}
+:root{{ --bg:#0b0c10; --panel:#12131a; --panel-2:#161823; --text:#e7e9ee; --muted:#a7adbd; --border:#2a2f3a; --accent:#6ea8fe; --pass:#22c55e; --fail:#ef4444; --na:#9aa4b2; --nr:#6b7280; --high:#ef4444; --mid:#f59e0b; --low:#22c55e; --chip-bg:#1c1f2b; }}
 @media (prefers-color-scheme: light){{ :root{{ --bg:#f7f8fa; --panel:#fff; --panel-2:#f3f4f7; --text:#0b0c10; --muted:#556070; --border:#e3e6ee; --chip-bg:#eef2ff; }} }}
 *{{ box-sizing:border-box; }}
 html,body{{ margin:0; padding:0; background:var(--bg); color:var(--text); font-family: system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,Helvetica Neue,Arial; }}
@@ -347,7 +326,7 @@ header{{ position:sticky; top:0; z-index:10; backdrop-filter: blur(6px); backgro
 
 .pill{{ display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; background:var(--chip-bg); border:1px solid var(--border); }}
 .dot{{ width:10px; height:10px; border-radius:50%; display:inline-block; }}
-.dot.pass{{ background:var(--pass); }} .dot.fail{{ background:var(--fail); }} .dot.na{{ background:var(--na); }}
+.dot.pass{{ background:var(--pass); }} .dot.fail{{ background:var(--fail); }} .dot.na{{ background:var(--na); }} .dot.nr{{ background:var(--nr); }}
 
 .sev{{ font-weight:700; padding:2px 8px; border-radius:8px; border:1px solid var(--border); }}
 .sev.high{{ color:var(--high);}} .sev.mid{{ color:var(--mid);}} .sev.low{{ color:var(--low);}}
@@ -361,7 +340,7 @@ header{{ position:sticky; top:0; z-index:10; backdrop-filter: blur(6px); backgro
 .row-badge .nowrap{{ overflow-wrap:anywhere; word-break: break-word; }}
 .tag{{ font-size:.8rem; color:var(--muted); border:1px solid var(--border); border-radius:8px; padding:2px 6px; white-space:nowrap; }}
 
-.summary{{ display:grid; grid-template-columns: repeat(4,1fr); gap:12px; }}
+.summary{{ display:grid; grid-template-columns: repeat(5,1fr); gap:12px; }}
 .kpi{{ background:var(--panel-2); border:1px solid var(--border); border-radius:14px; padding:12px; display:flex; flex-direction:column; gap:4px; }}
 .kpi .num{{ font-size:1.6rem; font-weight:800; }}
 .bar{{ height:10px; background:var(--panel); border:1px solid var(--border); border-radius:999px; overflow:hidden; }}
@@ -406,9 +385,10 @@ header{{ position:sticky; top:0; z-index:10; backdrop-filter: blur(6px); backgro
         <div class="kpi"><div class="muted">실패(Fail)</div><div class="num">{summary['fail']}</div></div>
         <div class="kpi"><div class="muted">통과(Pass)</div><div class="num">{summary['pass']}</div></div>
         <div class="kpi"><div class="muted">N/A</div><div class="num">{summary['na']}</div></div>
+        <div class="kpi"><div class="muted">미보고(NR)</div><div class="num">{summary['nr']}</div></div>
       </div>
       <div class="bar" style="margin-top:10px;"><div></div></div>
-      <div class="muted" style="margin-top:6px;">Pass 비율 (N/A 제외): {summary['pct_pass']}%</div>
+      <div class="muted" style="margin-top:6px;">Pass 비율 (N/A·NR 제외): {summary['pct_pass']}%</div>
     </section>
   </div>
   <section class="card" style="margin-top:16px;">
@@ -431,64 +411,78 @@ header{{ position:sticky; top:0; z-index:10; backdrop-filter: blur(6px); backgro
     <h3>세부 내역 (Fail만)</h3>
     {''.join(card_html) if card_html else '<div class="muted">Fail 항목이 없습니다.</div>'}
   </section>
-  <div class="foot">
-    <div>※ Pass 비율은 N/A를 제외한 항목(통과+실패) 기준으로 계산합니다.</div>
-  </div>
 </main>
 </body></html>"""
 
-# -----------------------
-# 집계 + 파일 출력 + 브라우저 (중복 제거 적용)
-# -----------------------
-def _compute_rows_and_summary(modules_dir: Path, severity_map: dict, project: str, target: str):
+# =========================
+# 7) 집계 + 파일 출력 + 브라우저
+# =========================
+def _compute_rows_and_summary(check_items: list[dict], modules_dir: Path, severity_map: dict, project: str, target: str):
+    # 모듈 산출물 수집
     inputs = [p for p in modules_dir.rglob("*.json") if p.is_file()]
     gathered = defaultdict(list)
     for p in inputs:
         for k, lst in _extract_results(p).items():
             gathered[k].extend(lst)
 
-    ORDER = {"Fail":3, "Pass":2, "N/A":1}
-    rows = []; pass_count = fail_count = na_count = 0
+    # check.txt가 없을 때(빈 리스트), 산출물의 키로 임시 목록 구성
+    if not check_items:
+        # 임시: 섹션/그룹 Unknown으로 채움
+        for k in sorted(gathered.keys()):
+            check_items.append({"section":"(Unknown)", "group":"(Unknown)", "title_ko":k, "key":k})
 
-    for item in CHECK_ITEMS:
-        key = item["key"]
-        title_ko = item["title_ko"]
-        per_key = gathered.get(key, []) if key else []
+    ORDER = {"Fail":3, "Pass":2, "N/A":1}  # worst 선택 우선순위
+    rows = []
+    pass_count = fail_count = na_count = nr_count = 0
+
+    for item in check_items:
+        key = item.get("key")
+        title_ko = item.get("title_ko") or key
+        per_key = gathered.get(_canon_key(key), []) if key else []
 
         if per_key:
-            worst = max(per_key, key=lambda x: ORDER.get(x["result"],0))
+            # worst 결과 산출 (Fail > Pass > N/A)
+            worst = max(per_key, key=lambda x: ORDER.get(x["result"], 0))
             result = worst["result"]
 
-            # 비고/증거 중복 제거 (내용 기준)
+            # 비고/증거 중복 제거
             notes_raw = [x.get("note","") for x in per_key if x.get("note")]
             notes = _dedup_keep_order(notes_raw, keyfunc=_norm_text)
 
-            evid_raw = [x.get("evidence") for x in per_key if x.get("evidence") is not None]
+            evid_raw = []
+            for x in per_key:
+                if x.get("evidence") is not None:
+                    evid_raw.append(x.get("evidence"))
+                if x.get("observed") not in (None, "", {}, []):
+                    evid_raw.append(x.get("observed"))
             evidences = _dedup_keep_order(evid_raw, keyfunc=_norm_evidence)
 
-            # 출처는 전체 합집합
+            if not notes and evidences:
+                notes = ["세부 내용은 Evidence 참조."]
+
             sources = sorted({x["source"] for x in per_key if x.get("source")})
         else:
-            result = "N/A"; notes=[]; evidences=[]; sources=[]
+            # 어떤 산출물에도 이 키가 없음 → NR
+            result = "NR"; notes=[]; evidences=[]; sources=[]
 
-        severity = severity_map[title_ko]  # 기본 High or txt 기준
-
+        severity = severity_map[title_ko]
         if result == "Pass": pass_count += 1
         elif result == "Fail": fail_count += 1
-        else: na_count += 1
+        elif result == "N/A": na_count += 1
+        else: nr_count += 1  # NR
 
         rows.append({
             "key": key, "title_ko": title_ko, "result": result, "severity": severity,
             "notes": "; ".join(notes) if notes else "",
             "evidences": evidences, "sources": sources,
-            "section": item["section"], "group": item["group"]
+            "section": item.get("section",""), "group": item.get("group","")
         })
 
     considered = pass_count + fail_count
     pct_pass = round((pass_count / considered) * 100, 1) if considered else 0.0
     summary = {
         "project": project, "target": target, "now": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "pass": pass_count, "fail": fail_count, "na": na_count,
+        "pass": pass_count, "fail": fail_count, "na": na_count, "nr": nr_count,
         "considered": considered, "pct_pass": pct_pass
     }
     return rows, summary
@@ -497,24 +491,26 @@ def generate_report(
     project: str = "KSJ OAuth 취약점 점검",
     target: str = "https://example.com",
     modules_dir: str | Path = "./module_reports",
+    check_file: str | Path = CHECK_TXT_DEFAULT,
     severity_file: str | Path | None = None,
     out_dir: str | Path = "./reports",
     open_browser: bool = True
 ):
-    """
-    보고서 생성 + (기본) 브라우저 자동 오픈
-    severity_file: 사용자가 넘기는 severity.txt 경로(선택)
-                   None이면 ./severity/severity.txt 또는 fallback 검색
-    Returns: (output_html_path: Path, summary: dict)
-    """
     modules_dir = Path(modules_dir)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # check.txt 로드
+    check_items = load_checks_from_checktxt(Path(check_file))
+
+    # severity 로드
     sev_path = resolve_severity_file(severity_file)
     severity_map = load_severity_from_txt(sev_path)
 
-    rows, summary = _compute_rows_and_summary(modules_dir, severity_map, project, target)
+    # 집계
+    rows, summary = _compute_rows_and_summary(check_items, modules_dir, severity_map, project, target)
+
+    # HTML 저장 + 브라우저 오픈
     out_file = out_dir / f"OAuth_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
     html = _build_html(rows, summary)
     out_file.write_text(html, encoding="utf-8")
@@ -527,14 +523,15 @@ def generate_report(
 
     return out_file, summary
 
-# -----------------------
-# CLI 진입점: 대상 URL 옵션 추가
-# -----------------------
+# =========================
+# 8) CLI
+# =========================
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description="OAuth Vulnerability Checker - 보고서 생성기")
     ap.add_argument("--project", default="KSJ OAuth 취약점 점검", help="프로젝트명")
     ap.add_argument("--target", "--target-url", dest="target", default="https://example.com", help="대상(서비스/RP) URL")
     ap.add_argument("--modules-dir", default="./module_reports", help="진단 모듈 산출물 JSON 폴더(재귀)")
+    ap.add_argument("--check-file", default=CHECK_TXT_DEFAULT, help="check.txt 경로 (기본: ./check.txt)")
     ap.add_argument("--severity-file", default=None, help="severity.txt 경로 (기본: ./severity/severity.txt 자동 탐색)")
     ap.add_argument("--out-dir", default="./reports", help="보고서 출력 폴더")
     args = ap.parse_args()
@@ -543,10 +540,12 @@ if __name__ == "__main__":
         project=args.project,
         target=args.target,
         modules_dir=args.modules_dir,
+        check_file=args.check_file,
         severity_file=args.severity_file,
         out_dir=args.out_dir,
-        open_browser=True  # 기본 자동 오픈
+        open_browser=True
     )
     print("✔ 보고서 생성:", out)
     print("   Target:", summary["target"])
-    print("   Pass:", summary["pass"], "Fail:", summary["fail"], "N/A:", summary["na"], "Pass%:", summary["pct_pass"])
+    print("   Pass:", summary["pass"], "Fail:", summary["fail"],
+          "N/A:", summary["na"], "NR:", summary["nr"], "Pass%:", summary["pct_pass"])

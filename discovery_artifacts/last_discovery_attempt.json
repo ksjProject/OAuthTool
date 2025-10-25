@@ -1,0 +1,55 @@
+{
+  "issuer_inferred": "https://happy.songsings.site/kc/realms/web-service",
+  "attempts": [
+    {
+      "url": "https://happy.songsings.site/kc/realms/web-service/.well-known/openid-configuration",
+      "status": 530,
+      "ct": "text/html; charset=UTF-8"
+    },
+    {
+      "url": "http://happy.songsings.site/kc/realms/web-service/.well-known/openid-configuration",
+      "status": 530,
+      "ct": "text/html; charset=UTF-8"
+    },
+    {
+      "url": "https://happy.songsings.site/.well-known/openid-configuration/kc/realms/web-service",
+      "status": 530,
+      "ct": "text/html; charset=UTF-8"
+    },
+    {
+      "url": "http://happy.songsings.site/.well-known/openid-configuration/kc/realms/web-service",
+      "status": 530,
+      "ct": "text/html; charset=UTF-8"
+    },
+    {
+      "url": "https://happy.songsings.site/kc/realms/web-service/.well-known/oauth-authorization-server",
+      "status": 530,
+      "ct": "text/html; charset=UTF-8"
+    },
+    {
+      "url": "http://happy.songsings.site/kc/realms/web-service/.well-known/oauth-authorization-server",
+      "status": 530,
+      "ct": "text/html; charset=UTF-8"
+    },
+    {
+      "url": "https://happy.songsings.site/.well-known/oauth-authorization-server/kc/realms/web-service",
+      "status": 530,
+      "ct": "text/html; charset=UTF-8"
+    },
+    {
+      "url": "http://happy.songsings.site/.well-known/oauth-authorization-server/kc/realms/web-service",
+      "status": 530,
+      "ct": "text/html; charset=UTF-8"
+    },
+    {
+      "url": "https://happy.songsings.site/.well-known/oauth-authorization-server?issuer=https%3A%2F%2Fhappy.songsings.site%2Fkc%2Frealms%2Fweb-service",
+      "status": 530,
+      "ct": "text/html; charset=UTF-8"
+    },
+    {
+      "url": "http://happy.songsings.site/.well-known/oauth-authorization-server?issuer=https%3A%2F%2Fhappy.songsings.site%2Fkc%2Frealms%2Fweb-service",
+      "status": 530,
+      "ct": "text/html; charset=UTF-8"
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "ok": true,
+  "failures": [],
+  "warnings": [],
+  "flow_type": "unknown",
+  "observed": {
+    "flow_type": "unknown",
+    "allowed_algs": [
+      "ES256",
+      "PS256",
+      "RS256"
+    ],
+    "discovery_present": true,
+    "jwks_present": true,
+    "tokens": []
+  },
+  "checklist": {
+    "A": {
+      "alg_pinned_allowlist": {
+        "result": "Pass",
+        "observed": []
+      },
+      "alg_none_forbidden": {
+        "result": "Pass"
+      },
+      "access_token_typ_atjwt": {
+        "result": "Pass"
+      },
+      "hs_usage_and_mixing": {
+        "result": "Advisory"
+      }
+    },
+    "B": {
+      "header_key_references": {
+        "result": "Pass"
+      },
+      "jwks_uri_https": {
+        "result": "Pass",
+        "observed": {
+          "jwks_uri": "https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/certs"
+        }
+      },
+      "jwks_content_check": {
+        "result": "Pass"
+      }
+    },
+    "C": {
+      "crit_header_handling": {
+        "result": "Pass"
+      },
+      "issuer_algorithm_mixing": {
+        "result": "Advisory"
+      }
+    }
+  }
+}

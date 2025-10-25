@@ -1,0 +1,59 @@
+{
+  "label": "ADVISORY",
+  "flow_type": "unknown",
+  "checklist": {
+    "A": {
+      "flow_identify": {
+        "result": "Pass",
+        "evidence": {
+          "scope": "",
+          "response_type": ""
+        }
+      },
+      "nonce_used_in_codeflow": {
+        "result": "N/A"
+      },
+      "nonce_entropy_freshness": {
+        "result": "N/A"
+      }
+    },
+    "B": {
+      "id_token_must_include_nonce_if_requested": {
+        "result": "N/A"
+      }
+    },
+    "C": {
+      "nonce_equality_validation": {
+        "result": "N/A"
+      },
+      "nonce_replay_rejection": {
+        "result": "N/A"
+      },
+      "iss_matches_discovery": {
+        "result": "N/A"
+      },
+      "aud_includes_client": {
+        "result": "N/A"
+      },
+      "alg_supported_by_discovery": {
+        "result": "N/A"
+      },
+      "kid_found_in_jwks": {
+        "result": "N/A"
+      }
+    }
+  },
+  "issues": [
+    {
+      "level": "ADVISORY",
+      "code": "A1",
+      "title": "PKCE 미사용 추정",
+      "reason": "코드 플로우는 PKCE(S256) 사용이 안전합니다.",
+      "remedy": "code_challenge(S256)/code_verifier 사용.",
+      "evidence": {
+        "code_challenge": false,
+        "code_challenge_method": null
+      }
+    }
+  ]
+}

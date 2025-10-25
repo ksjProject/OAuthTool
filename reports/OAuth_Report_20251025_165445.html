@@ -1,0 +1,864 @@
+<!doctype html>
+<html lang="ko"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>OAuth Vulnerability Checker - 최종 보고서</title>
+<style>
+:root{ --bg:#0b0c10; --panel:#12131a; --panel-2:#161823; --text:#e7e9ee; --muted:#a7adbd; --border:#2a2f3a; --accent:#6ea8fe; --pass:#22c55e; --fail:#ef4444; --na:#9aa4b2; --nr:#6b7280; --high:#ef4444; --mid:#f59e0b; --low:#22c55e; --chip-bg:#1c1f2b; }
+@media (prefers-color-scheme: light){ :root{ --bg:#f7f8fa; --panel:#fff; --panel-2:#f3f4f7; --text:#0b0c10; --muted:#556070; --border:#e3e6ee; --chip-bg:#eef2ff; } }
+*{ box-sizing:border-box; }
+html,body{ margin:0; padding:0; background:var(--bg); color:var(--text); font-family: system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,Cantarell,Noto Sans,Helvetica Neue,Arial; }
+header{ position:sticky; top:0; z-index:10; backdrop-filter: blur(6px); background: color-mix(in oklab, var(--bg), transparent 35%); border-bottom:1px solid var(--border);}
+.container{ max-width:1100px; margin:0 auto; padding:20px; }
+.topbar{ display:flex; align-items:center; justify-content:space-between; gap:16px; padding:10px 0; }
+.brand{ display:flex; gap:12px; align-items:center; font-weight:800; letter-spacing:.2px; }
+.logo{ width:28px; height:28px; border-radius:8px; display:inline-grid; place-items:center; background:linear-gradient(135deg, var(--accent), #a78bfa); color:white; font-size:16px; }
+.actions button{ background: var(--panel); color:var(--text); border:1px solid var(--border); padding:8px 12px; border-radius:10px; cursor:pointer; font-weight:600; }
+
+.grid{ display:grid; gap:16px; grid-template-columns: 1.2fr .8fr; }
+.card{ background:var(--panel); border:1px solid var(--border); border-radius:16px; padding:16px; }
+
+.muted{ color:var(--muted); font-size:.95rem; }
+.kv{ display:grid; grid-template-columns: 160px 1fr; gap:10px 14px; }
+
+.pill{ display:inline-flex; align-items:center; gap:8px; padding:6px 10px; border-radius:999px; background:var(--chip-bg); border:1px solid var(--border); }
+.dot{ width:10px; height:10px; border-radius:50%; display:inline-block; }
+.dot.pass{ background:var(--pass); } .dot.fail{ background:var(--fail); } .dot.na{ background:var(--na); } .dot.nr{ background:var(--nr); }
+
+.sev{ font-weight:700; padding:2px 8px; border-radius:8px; border:1px solid var(--border); }
+.sev.high{ color:var(--high);} .sev.mid{ color:var(--mid);} .sev.low{ color:var(--low);}
+
+/* 표 & 텍스트 넘침 방지 */
+.table{ width:100%; border-collapse: collapse; table-layout: fixed; }
+.table th,.table td{ border-bottom:1px solid var(--border); padding:10px 8px; text-align:left; vertical-align: top; }
+.table th,.table td{ word-break: break-word; overflow-wrap:anywhere; }
+.table th{ font-size:.9rem; color:var(--muted); font-weight:700; }
+.row-badge{ display:inline-flex; align-items:center; gap:8px; max-width:100%; }
+.row-badge .nowrap{ overflow-wrap:anywhere; word-break: break-word; }
+.tag{ font-size:.8rem; color:var(--muted); border:1px solid var(--border); border-radius:8px; padding:2px 6px; white-space:nowrap; }
+
+.summary{ display:grid; grid-template-columns: repeat(5,1fr); gap:12px; }
+.kpi{ background:var(--panel-2); border:1px solid var(--border); border-radius:14px; padding:12px; display:flex; flex-direction:column; gap:4px; }
+.kpi .num{ font-size:1.6rem; font-weight:800; }
+.bar{ height:10px; background:var(--panel); border:1px solid var(--border); border-radius:999px; overflow:hidden; }
+.bar > div{ height:100%; background: linear-gradient(90deg, var(--fail), #f97316, var(--pass)); width:69.2%; }
+
+.finding{ border:1px solid var(--border); border-radius:14px; padding:14px; background:var(--panel); }
+.finding + .finding{ margin-top:12px; }
+.meta{ display:flex; gap:10px; flex-wrap:wrap; }
+.evidence{ background:var(--panel-2); border:1px solid var(--border); border-radius:12px; padding:10px;
+           white-space:pre-wrap; overflow-wrap:anywhere; word-break: break-word;
+           font-family: ui-monospace, Menlo, Consolas, "Liberation Mono", monospace; font-size:.85rem; }
+.wrap{ overflow-wrap:anywhere; word-break: break-word; }
+
+.foot{ margin-top:20px; color:var(--muted); font-size:.9rem; }
+@media print{ header{ position:static; } .container{ padding:0; } .card,.finding{ break-inside: avoid; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="container topbar">
+    <div class="brand">
+      <div class="logo">🔍</div>
+      <div>OAuth Vulnerability Checker</div>
+    </div>
+    <div class="actions"><button onclick="window.print()">인쇄 / PDF 저장</button></div>
+  </div>
+</header>
+<main class="container">
+  <div class="grid">
+    <section class="card">
+      <h3>리포트 메타</h3>
+      <div class="kv" style="margin-top:10px;">
+        <div class="muted">프로젝트</div><div>KSJ OAuth 취약점 점검</div>
+        <div class="muted">대상(서비스/RP)</div><div>https://ksj15.ddns.net/django/</div>
+        <div class="muted">점검 일시</div><div>2025-10-25 16:54</div>
+      </div>
+    </section>
+    <section class="card">
+      <h3>요약</h3>
+      <div class="summary" style="margin-top:8px;">
+        <div class="kpi"><div class="muted">총 항목(집계)</div><div class="num">65</div></div>
+        <div class="kpi"><div class="muted">실패(Fail)</div><div class="num">20</div></div>
+        <div class="kpi"><div class="muted">통과(Pass)</div><div class="num">45</div></div>
+        <div class="kpi"><div class="muted">N/A</div><div class="num">15</div></div>
+        <div class="kpi"><div class="muted">미보고(NR)</div><div class="num">0</div></div>
+      </div>
+      <div class="bar" style="margin-top:10px;"><div></div></div>
+      <div class="muted" style="margin-top:6px;">Pass 비율 (N/A·NR 제외): 69.2%</div>
+    </section>
+  </div>
+  <section class="card" style="margin-top:16px;">
+    <h3>점검 결과 목록</h3>
+    <table class="table" style="margin-top:6px;">
+      <thead>
+        <tr>
+          <th style="width:52%;">Vulnerability (취약점)</th>
+          <th style="width:14%;">결과</th>
+          <th style="width:12%;">위험도</th>
+          <th>비고</th>
+        </tr>
+      </thead>
+      <tbody>
+        
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">A1</span> <span class="tag">A1</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">code_challenge_method가 없어 PKCE 미사용으로 추정됩니다.</td>
+        </tr>
+        <tr data-result="Fail">
+          <td><div class="row-badge"><span class="nowrap">A2</span> <span class="tag">A2</span></div></td>
+          <td><span class="pill"><span class="dot fail"></span> Fail</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">허용 목록 밖 alg &#x27;HS512&#x27;. 허용=[&#x27;ES256&#x27;, &#x27;PS256&#x27;, &#x27;RS256&#x27;]</td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">A5</span> <span class="tag">A5</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">동일 발행자 환경에서 HS ↔ RS/ES/PS 혼용은 구현 혼동 표면.</td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">A6</span> <span class="tag">A6</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">관찰 집합: [&#x27;HS512&#x27;, &#x27;RS256&#x27;]</td>
+        </tr>
+        <tr data-result="Fail">
+          <td><div class="row-badge"><span class="nowrap">B7</span> <span class="tag">B7</span></div></td>
+          <td><span class="pill"><span class="dot fail"></span> Fail</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">재조회 후에도 없으면 검증기 fail-closed 권장.</td>
+        </tr>
+        <tr data-result="Fail">
+          <td><div class="row-badge"><span class="nowrap">C1</span> <span class="tag">C1</span></div></td>
+          <td><span class="pill"><span class="dot fail"></span> Fail</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">등록·정확 문자열 일치 및 HTTPS(네이티브 loopback 예외), 와일드카드/fragment 금지.</td>
+        </tr>
+        <tr data-result="Fail">
+          <td><div class="row-badge"><span class="nowrap">C1A</span> <span class="tag">C1A</span></div></td>
+          <td><span class="pill"><span class="dot fail"></span> Fail</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">Authorization Request MUST include redirect_uri for registered clients.</td>
+        </tr>
+        <tr data-result="Fail">
+          <td><div class="row-badge"><span class="nowrap">C2</span> <span class="tag">C2</span></div></td>
+          <td><span class="pill"><span class="dot fail"></span> Fail</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">response_mode=form_post를 사용해 로그/Referer/히스토리 누출을 차단하세요.; 단일 핀닝 권장.</td>
+        </tr>
+        <tr data-result="Fail">
+          <td><div class="row-badge"><span class="nowrap">C3</span> <span class="tag">C3</span></div></td>
+          <td><span class="pill"><span class="dot fail"></span> Fail</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">인가 응답에 &#x27;iss&#x27;를 포함해 발신자(AS)를 식별하고 Mix-Up을 방지하세요.</td>
+        </tr>
+        <tr data-result="Fail">
+          <td><div class="row-badge"><span class="nowrap">C4</span> <span class="tag">C4</span></div></td>
+          <td><span class="pill"><span class="dot fail"></span> Fail</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">코드 플로우에 PKCE(S256) 필수.</td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">C4H</span> <span class="tag">C4H</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">서버가 plain을 지원 — 다운그레이드 위험, S256만 허용하도록 구성 권장.</td>
+        </tr>
+        <tr data-result="Fail">
+          <td><div class="row-badge"><span class="nowrap">C6A</span> <span class="tag">C6A</span></div></td>
+          <td><span class="pill"><span class="dot fail"></span> Fail</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">상관관계 강화를 위해 고엔트로피 state 사용.</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">Callback State Mismatch</span> <span class="tag">Callback State Mismatch</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">콜백 state 불일치(알 수 없음)</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">Callback State Missing</span> <span class="tag">Callback State Missing</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">콜백에 state 누락</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">Client Secret Query</span> <span class="tag">Client Secret Query</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">client_secret이 URL 쿼리에 포함됨</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">Client Secret Referer</span> <span class="tag">Client Secret Referer</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">Referer로 client_secret 유출</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">Query Sensitive</span> <span class="tag">Query Sensitive</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">민감 파라미터가 URL 쿼리에 포함됨</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">Referer Sensitive</span> <span class="tag">Referer Sensitive</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">Referer로 민감 파라미터 유출</td>
+        </tr>
+        <tr data-result="Fail">
+          <td><div class="row-badge"><span class="nowrap">Risky Scope</span> <span class="tag">Risky Scope</span></div></td>
+          <td><span class="pill"><span class="dot fail"></span> Fail</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">과도한/민감한 scope 요청 | Recommendation: 최소 권한 원칙을 적용하고, 민감 범위는 별도 동의 절차로 분리하세요. | Full: 과도한/민감한 scope 요청 (IDP-agnostic)</td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">Session token secret</span> <span class="tag">Session token secret</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">session_token.json에 client_secret 기록 감지</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">State Low Entropy</span> <span class="tag">State Low Entropy</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">state 무작위성 부족</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">State Missing</span> <span class="tag">State Missing</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">Authorization 요청에 state 누락</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">State Reuse</span> <span class="tag">State Reuse</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">state 재사용 감지</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">Token Auth Basic</span> <span class="tag">Token Auth Basic</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">Token 요청에서 Authorization: Basic 사용 감지</td>
+        </tr>
+        <tr data-result="Fail">
+          <td><div class="row-badge"><span class="nowrap">Token Body Secret</span> <span class="tag">Token Body Secret</span></div></td>
+          <td><span class="pill"><span class="dot fail"></span> Fail</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">Token 요청에서 client_secret 전송 감지 | Recommendation: 토큰은 HTTP 헤더에 포함되어야 합니다. | Full: Token 요청에서 client_secret 전송 감지</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">access_token_typ_atjwt</span> <span class="tag">access_token_typ_atjwt</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">alg_none_forbidden</span> <span class="tag">alg_none_forbidden</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Fail">
+          <td><div class="row-badge"><span class="nowrap">alg_pinned_allowlist</span> <span class="tag">alg_pinned_allowlist</span></div></td>
+          <td><span class="pill"><span class="dot fail"></span> Fail</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">세부 내용은 Evidence 참조.</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">alg_supported_by_discovery</span> <span class="tag">alg_supported_by_discovery</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">alg_whitelist_access_token</span> <span class="tag">alg_whitelist_access_token</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">세부 내용은 Evidence 참조.</td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">alg_whitelist_client_assertion</span> <span class="tag">alg_whitelist_client_assertion</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">alg_whitelist_id_token</span> <span class="tag">alg_whitelist_id_token</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">세부 내용은 Evidence 참조.</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">aud_includes_client</span> <span class="tag">aud_includes_client</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">crit_header_handling</span> <span class="tag">crit_header_handling</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">flow_identify</span> <span class="tag">flow_identify</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">세부 내용은 Evidence 참조.</td>
+        </tr>
+        <tr data-result="Fail">
+          <td><div class="row-badge"><span class="nowrap">form_post_used</span> <span class="tag">form_post_used</span></div></td>
+          <td><span class="pill"><span class="dot fail"></span> Fail</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">response_mode가 form_post 아님; code exposed in URL</td>
+        </tr>
+        <tr data-result="Fail">
+          <td><div class="row-badge"><span class="nowrap">front_channel_leak_risk</span> <span class="tag">front_channel_leak_risk</span></div></td>
+          <td><span class="pill"><span class="dot fail"></span> Fail</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">URL에 code 존재(로그/Referer/히스토리 유출 위험)</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">header_external_ref_access_token</span> <span class="tag">header_external_ref_access_token</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">header_external_ref_id_token</span> <span class="tag">header_external_ref_id_token</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">header_injection_fields_seen</span> <span class="tag">header_injection_fields_seen</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">세부 내용은 Evidence 참조.</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">header_key_references</span> <span class="tag">header_key_references</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">hs_rs_switch</span> <span class="tag">hs_rs_switch</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">hs_usage_and_mixing</span> <span class="tag">hs_usage_and_mixing</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">id_token_must_include_nonce_if_requested</span> <span class="tag">id_token_must_include_nonce_if_requested</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">inject_unknown_kid</span> <span class="tag">inject_unknown_kid</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">동작 테스트는 동적 환경 필요. 모듈은 unknown kid를 Fail로 판정.</td>
+        </tr>
+        <tr data-result="Fail">
+          <td><div class="row-badge"><span class="nowrap">iss_in_authorization_response</span> <span class="tag">iss_in_authorization_response</span></div></td>
+          <td><span class="pill"><span class="dot fail"></span> Fail</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">discovery가 iss 지원을 광고함</td>
+        </tr>
+        <tr data-result="Fail">
+          <td><div class="row-badge"><span class="nowrap">iss_matches_discovery</span> <span class="tag">iss_matches_discovery</span></div></td>
+          <td><span class="pill"><span class="dot fail"></span> Fail</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">iss 부재 — discovery.issuer와 대조 불가; iss == discovery.issuer (https://happy.songsings.site/kc/realms/web-service)</td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">issuer_algorithm_mixing</span> <span class="tag">issuer_algorithm_mixing</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">issuer_host_matches_jwks_uri</span> <span class="tag">issuer_host_matches_jwks_uri</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">세부 내용은 Evidence 참조.</td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">jar_par_usage</span> <span class="tag">jar_par_usage</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">서버가 PAR 제공 — 사용 권장</td>
+        </tr>
+        <tr data-result="Fail">
+          <td><div class="row-badge"><span class="nowrap">jwks_content_check</span> <span class="tag">jwks_content_check</span></div></td>
+          <td><span class="pill"><span class="dot fail"></span> Fail</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">jwks_duplicate_kid</span> <span class="tag">jwks_duplicate_kid</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">세부 내용은 Evidence 참조.</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">jwks_has_keys</span> <span class="tag">jwks_has_keys</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">세부 내용은 Evidence 참조.</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">jwks_uri_https</span> <span class="tag">jwks_uri_https</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">세부 내용은 Evidence 참조.</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">jwks_use_keyops</span> <span class="tag">jwks_use_keyops</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">세부 내용은 Evidence 참조.</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">kid_found_in_jwks</span> <span class="tag">kid_found_in_jwks</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">kid_known_access_token</span> <span class="tag">kid_known_access_token</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">kid_known_id_token</span> <span class="tag">kid_known_id_token</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">kid_pattern_access_token</span> <span class="tag">kid_pattern_access_token</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">kid_pattern_id_token</span> <span class="tag">kid_pattern_id_token</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">kid_present_access_token</span> <span class="tag">kid_present_access_token</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">kid_present_client_assertion</span> <span class="tag">kid_present_client_assertion</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">kid_present_id_token</span> <span class="tag">kid_present_id_token</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">kid_traversal</span> <span class="tag">kid_traversal</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">kid_use_sig_access_token</span> <span class="tag">kid_use_sig_access_token</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">kid_use_sig_id_token</span> <span class="tag">kid_use_sig_id_token</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">no_external_header_refs</span> <span class="tag">no_external_header_refs</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">세부 내용은 Evidence 참조.</td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">nonce_entropy_freshness</span> <span class="tag">nonce_entropy_freshness</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">nonce_equality_validation</span> <span class="tag">nonce_equality_validation</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">nonce_replay_rejection</span> <span class="tag">nonce_replay_rejection</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">nonce_used_in_codeflow</span> <span class="tag">nonce_used_in_codeflow</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Pass">
+          <td><div class="row-badge"><span class="nowrap">pin_issuer_jwks_uri</span> <span class="tag">pin_issuer_jwks_uri</span></div></td>
+          <td><span class="pill"><span class="dot pass"></span> Pass</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">세부 내용은 Evidence 참조.</td>
+        </tr>
+        <tr data-result="Fail">
+          <td><div class="row-badge"><span class="nowrap">pkce_s256_in_request</span> <span class="tag">pkce_s256_in_request</span></div></td>
+          <td><span class="pill"><span class="dot fail"></span> Fail</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">code_challenge 누락 또는 method≠S256</td>
+        </tr>
+        <tr data-result="Fail">
+          <td><div class="row-badge"><span class="nowrap">redirect_uri_presence</span> <span class="tag">redirect_uri_presence</span></div></td>
+          <td><span class="pill"><span class="dot fail"></span> Fail</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">세부 내용은 Evidence 참조.</td>
+        </tr>
+        <tr data-result="Fail">
+          <td><div class="row-badge"><span class="nowrap">redirect_uri_safety</span> <span class="tag">redirect_uri_safety</span></div></td>
+          <td><span class="pill"><span class="dot fail"></span> Fail</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">HTTPS 강제(네이티브 loopback 예외)</td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">referer_leak_risk</span> <span class="tag">referer_leak_risk</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">registration_jwks_vs_jwks_uri</span> <span class="tag">registration_jwks_vs_jwks_uri</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="Fail">
+          <td><div class="row-badge"><span class="nowrap">state_presence</span> <span class="tag">state_presence</span></div></td>
+          <td><span class="pill"><span class="dot fail"></span> Fail</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">고엔트로피/예측 불가</td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">token_has_code_verifier</span> <span class="tag">token_has_code_verifier</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap"><span class="muted">—</span></td>
+        </tr>
+        <tr data-result="N/A">
+          <td><div class="row-badge"><span class="nowrap">token_redirect_match</span> <span class="tag">token_redirect_match</span></div></td>
+          <td><span class="pill"><span class="dot na"></span> N/A</span></td>
+          <td><span class="sev low">Low</span></td>
+          <td class="wrap">token_request body 관찰 불가</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+  <section class="card" style="margin-top:16px;">
+    <h3>세부 내역 (Fail만)</h3>
+    
+        <div class="finding">
+          <h4 class="wrap">A2 <span class='tag'>A2</span></h4>
+          <div class="meta">
+            <span class="pill">결과: <span class="pill"><span class="dot fail"></span> Fail</span></span>
+            <span class="pill">위험도: <span class="sev low">Low</span></span>
+            <span class="pill">분류: (Unknown) / (Unknown)</span>
+          </div>
+          <p class="wrap">허용 목록 밖 alg &#x27;HS512&#x27;. 허용=[&#x27;ES256&#x27;, &#x27;PS256&#x27;, &#x27;RS256&#x27;]</p>
+          <div class="evidence">{
+  &quot;alg&quot;: &quot;HS512&quot;,
+  &quot;token_kind&quot;: &quot;found&quot;
+}</div>
+          <div class='muted'>출처: second_oauthtool_report.json</div>
+        </div>
+        <div class="finding">
+          <h4 class="wrap">B7 <span class='tag'>B7</span></h4>
+          <div class="meta">
+            <span class="pill">결과: <span class="pill"><span class="dot fail"></span> Fail</span></span>
+            <span class="pill">위험도: <span class="sev low">Low</span></span>
+            <span class="pill">분류: (Unknown) / (Unknown)</span>
+          </div>
+          <p class="wrap">재조회 후에도 없으면 검증기 fail-closed 권장.</p>
+          <div class="evidence">{
+  &quot;missing&quot;: [
+    &quot;b9bf4e29-a821-4816-81ad-04bdfd7123d8&quot;,
+    &quot;b9bf4e29-a821-4816-81ad-04bdfd7123d8&quot;
+  ]
+}</div>
+          <div class='muted'>출처: second_oauthtool_report.json</div>
+        </div>
+        <div class="finding">
+          <h4 class="wrap">C1 <span class='tag'>C1</span></h4>
+          <div class="meta">
+            <span class="pill">결과: <span class="pill"><span class="dot fail"></span> Fail</span></span>
+            <span class="pill">위험도: <span class="sev low">Low</span></span>
+            <span class="pill">분류: (Unknown) / (Unknown)</span>
+          </div>
+          <p class="wrap">등록·정확 문자열 일치 및 HTTPS(네이티브 loopback 예외), 와일드카드/fragment 금지.</p>
+          <div class="evidence">{
+  &quot;parsed&quot;: &quot;http://ksj15.ddns.net/django/accounts/oidc/callback/&quot;
+}</div>
+          <div class='muted'>출처: second_oauthtool_report.json</div>
+        </div>
+        <div class="finding">
+          <h4 class="wrap">C1A <span class='tag'>C1A</span></h4>
+          <div class="meta">
+            <span class="pill">결과: <span class="pill"><span class="dot fail"></span> Fail</span></span>
+            <span class="pill">위험도: <span class="sev low">Low</span></span>
+            <span class="pill">분류: (Unknown) / (Unknown)</span>
+          </div>
+          <p class="wrap">Authorization Request MUST include redirect_uri for registered clients.</p>
+          <div class="evidence">{
+  &quot;redirect_uri&quot;: null
+}</div>
+          <div class='muted'>출처: authcode_report.json</div>
+        </div>
+        <div class="finding">
+          <h4 class="wrap">C2 <span class='tag'>C2</span></h4>
+          <div class="meta">
+            <span class="pill">결과: <span class="pill"><span class="dot fail"></span> Fail</span></span>
+            <span class="pill">위험도: <span class="sev low">Low</span></span>
+            <span class="pill">분류: (Unknown) / (Unknown)</span>
+          </div>
+          <p class="wrap">response_mode=form_post를 사용해 로그/Referer/히스토리 누출을 차단하세요.; 단일 핀닝 권장.</p>
+          <div class="evidence">{
+  &quot;location&quot;: &quot;http://ksj15.ddns.net/django/accounts/oidc/callback/?state=8QAXwP9I0lyXEjJWB3UeCUlUvydEEMOrKCsfrNRzlvU&amp;session_state=d5d17a8d-ccab-4b25-86fa-3c7d0cdb99c1&amp;iss=https%3A%2F%2Fhappy.songsings.site%2Fkc%2Frealms%2Fweb-service&amp;code=44f6f282-4182-46b2-b930-f394f997e381.d5d17a8d-ccab-4b25-86fa-3c7d0cdb99c1.5cb442f6-10c8-4630-b248-0bb859b42688&quot;
+}</div><div class="evidence">{
+  &quot;by_iss&quot;: {
+    &quot;https://happy.songsings.site/kc/realms/web-service&quot;: [
+      &quot;RS256&quot;,
+      &quot;HS512&quot;
+    ]
+  }
+}</div>
+          <div class='muted'>출처: second_oauthtool_report.json</div>
+        </div>
+        <div class="finding">
+          <h4 class="wrap">C3 <span class='tag'>C3</span></h4>
+          <div class="meta">
+            <span class="pill">결과: <span class="pill"><span class="dot fail"></span> Fail</span></span>
+            <span class="pill">위험도: <span class="sev low">Low</span></span>
+            <span class="pill">분류: (Unknown) / (Unknown)</span>
+          </div>
+          <p class="wrap">인가 응답에 &#x27;iss&#x27;를 포함해 발신자(AS)를 식별하고 Mix-Up을 방지하세요.</p>
+          <div class="evidence">{
+  &quot;observed_params&quot;: []
+}</div>
+          <div class='muted'>출처: authcode_report.json</div>
+        </div>
+        <div class="finding">
+          <h4 class="wrap">C4 <span class='tag'>C4</span></h4>
+          <div class="meta">
+            <span class="pill">결과: <span class="pill"><span class="dot fail"></span> Fail</span></span>
+            <span class="pill">위험도: <span class="sev low">Low</span></span>
+            <span class="pill">분류: (Unknown) / (Unknown)</span>
+          </div>
+          <p class="wrap">코드 플로우에 PKCE(S256) 필수.</p>
+          <div class="evidence">{
+  &quot;response_type&quot;: null
+}</div><div class="evidence">{
+  &quot;response_type&quot;: &quot;code&quot;
+}</div>
+          <div class='muted'>출처: authcode_report.json, second_oauthtool_report.json</div>
+        </div>
+        <div class="finding">
+          <h4 class="wrap">C6A <span class='tag'>C6A</span></h4>
+          <div class="meta">
+            <span class="pill">결과: <span class="pill"><span class="dot fail"></span> Fail</span></span>
+            <span class="pill">위험도: <span class="sev low">Low</span></span>
+            <span class="pill">분류: (Unknown) / (Unknown)</span>
+          </div>
+          <p class="wrap">상관관계 강화를 위해 고엔트로피 state 사용.</p>
+          
+          <div class='muted'>출처: authcode_report.json</div>
+        </div>
+        <div class="finding">
+          <h4 class="wrap">Risky Scope <span class='tag'>Risky Scope</span></h4>
+          <div class="meta">
+            <span class="pill">결과: <span class="pill"><span class="dot fail"></span> Fail</span></span>
+            <span class="pill">위험도: <span class="sev low">Low</span></span>
+            <span class="pill">분류: (Unknown) / (Unknown)</span>
+          </div>
+          <p class="wrap">과도한/민감한 scope 요청 | Recommendation: 최소 권한 원칙을 적용하고, 민감 범위는 별도 동의 절차로 분리하세요. | Full: 과도한/민감한 scope 요청 (IDP-agnostic)</p>
+          <div class="evidence">Request URL: https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/auth?client_id=200-django&amp;response_type=code&amp;scope=openid+profile+email+offline_access&amp;redirect_uri=http%3A%2F%2Fksj15.ddns.net%2Fdjango%2Faccounts%2Foidc%2Fcallback%2F&amp;state=QO-gDUNazioUKqC0wfju0YqcXK_Ab7mmAPvUzIOJbsY&amp;nonce=FVmATPe-w_Tx0qGMWx8NS8RZdy6r2eMRiVDPKK6zADQ
+Risk tokens: email, offline_access, profile
+Risk categories: OFFLINE, PRIVACY</div>
+          <div class='muted'>출처: oauth_report.json</div>
+        </div>
+        <div class="finding">
+          <h4 class="wrap">Token Body Secret <span class='tag'>Token Body Secret</span></h4>
+          <div class="meta">
+            <span class="pill">결과: <span class="pill"><span class="dot fail"></span> Fail</span></span>
+            <span class="pill">위험도: <span class="sev low">Low</span></span>
+            <span class="pill">분류: (Unknown) / (Unknown)</span>
+          </div>
+          <p class="wrap">Token 요청에서 client_secret 전송 감지 | Recommendation: 토큰은 HTTP 헤더에 포함되어야 합니다. | Full: Token 요청에서 client_secret 전송 감지</p>
+          <div class="evidence">Token endpoint POST to https://happy.songsings.site/kc/realms/web-service/protocol/openid-connect/token
+body snippet: grant_type=authorization_code&amp;client_id=200-django&amp;client_secret=KiolOZrdVwr5nr7jHYgrYK8j81qYJVfo&amp;code=801f4b30-9182-49a0-a603-8967e86a7b2f.2bafe6c5-c542-4ea6-9bb1-3402b1ad48a0.5cb442f6-10c8-4630-b248-0bb859b42688&amp;redirect_uri=http%3A%2F%2Fksj15.ddns.net%2Fdjango%2Faccounts%2Foidc%2Fcallback%2F</div>
+          <div class='muted'>출처: oauth_report.json</div>
+        </div>
+        <div class="finding">
+          <h4 class="wrap">alg_pinned_allowlist <span class='tag'>alg_pinned_allowlist</span></h4>
+          <div class="meta">
+            <span class="pill">결과: <span class="pill"><span class="dot fail"></span> Fail</span></span>
+            <span class="pill">위험도: <span class="sev low">Low</span></span>
+            <span class="pill">분류: (Unknown) / (Unknown)</span>
+          </div>
+          <p class="wrap">세부 내용은 Evidence 참조.</p>
+          <div class="evidence">[
+  [
+    &quot;found&quot;,
+    &quot;HS512&quot;
+  ],
+  [
+    &quot;found&quot;,
+    &quot;HS512&quot;
+  ],
+  [
+    &quot;found&quot;,
+    &quot;RS256&quot;
+  ],
+  [
+    &quot;found&quot;,
+    &quot;RS256&quot;
+  ]
+]</div>
+          <div class='muted'>출처: alg_check_result.json, second_oauthtool_report.json</div>
+        </div>
+        <div class="finding">
+          <h4 class="wrap">form_post_used <span class='tag'>form_post_used</span></h4>
+          <div class="meta">
+            <span class="pill">결과: <span class="pill"><span class="dot fail"></span> Fail</span></span>
+            <span class="pill">위험도: <span class="sev low">Low</span></span>
+            <span class="pill">분류: (Unknown) / (Unknown)</span>
+          </div>
+          <p class="wrap">response_mode가 form_post 아님; code exposed in URL</p>
+          
+          <div class='muted'>출처: authcode_report.json, second_oauthtool_report.json</div>
+        </div>
+        <div class="finding">
+          <h4 class="wrap">front_channel_leak_risk <span class='tag'>front_channel_leak_risk</span></h4>
+          <div class="meta">
+            <span class="pill">결과: <span class="pill"><span class="dot fail"></span> Fail</span></span>
+            <span class="pill">위험도: <span class="sev low">Low</span></span>
+            <span class="pill">분류: (Unknown) / (Unknown)</span>
+          </div>
+          <p class="wrap">URL에 code 존재(로그/Referer/히스토리 유출 위험)</p>
+          
+          <div class='muted'>출처: authcode_report.json, second_oauthtool_report.json</div>
+        </div>
+        <div class="finding">
+          <h4 class="wrap">iss_in_authorization_response <span class='tag'>iss_in_authorization_response</span></h4>
+          <div class="meta">
+            <span class="pill">결과: <span class="pill"><span class="dot fail"></span> Fail</span></span>
+            <span class="pill">위험도: <span class="sev low">Low</span></span>
+            <span class="pill">분류: (Unknown) / (Unknown)</span>
+          </div>
+          <p class="wrap">discovery가 iss 지원을 광고함</p>
+          
+          <div class='muted'>출처: authcode_report.json, second_oauthtool_report.json</div>
+        </div>
+        <div class="finding">
+          <h4 class="wrap">iss_matches_discovery <span class='tag'>iss_matches_discovery</span></h4>
+          <div class="meta">
+            <span class="pill">결과: <span class="pill"><span class="dot fail"></span> Fail</span></span>
+            <span class="pill">위험도: <span class="sev low">Low</span></span>
+            <span class="pill">분류: (Unknown) / (Unknown)</span>
+          </div>
+          <p class="wrap">iss 부재 — discovery.issuer와 대조 불가; iss == discovery.issuer (https://happy.songsings.site/kc/realms/web-service)</p>
+          <div class="evidence">{
+  &quot;discovery_issuer&quot;: &quot;https://happy.songsings.site/kc/realms/web-service&quot;
+}</div>
+          <div class='muted'>출처: authcode_report.json, nonce_check_result.json, second_oauthtool_report.json</div>
+        </div>
+        <div class="finding">
+          <h4 class="wrap">jwks_content_check <span class='tag'>jwks_content_check</span></h4>
+          <div class="meta">
+            <span class="pill">결과: <span class="pill"><span class="dot fail"></span> Fail</span></span>
+            <span class="pill">위험도: <span class="sev low">Low</span></span>
+            <span class="pill">분류: (Unknown) / (Unknown)</span>
+          </div>
+          
+          
+          <div class='muted'>출처: alg_check_result.json, second_oauthtool_report.json</div>
+        </div>
+        <div class="finding">
+          <h4 class="wrap">pkce_s256_in_request <span class='tag'>pkce_s256_in_request</span></h4>
+          <div class="meta">
+            <span class="pill">결과: <span class="pill"><span class="dot fail"></span> Fail</span></span>
+            <span class="pill">위험도: <span class="sev low">Low</span></span>
+            <span class="pill">분류: (Unknown) / (Unknown)</span>
+          </div>
+          <p class="wrap">code_challenge 누락 또는 method≠S256</p>
+          
+          <div class='muted'>출처: authcode_report.json, second_oauthtool_report.json</div>
+        </div>
+        <div class="finding">
+          <h4 class="wrap">redirect_uri_presence <span class='tag'>redirect_uri_presence</span></h4>
+          <div class="meta">
+            <span class="pill">결과: <span class="pill"><span class="dot fail"></span> Fail</span></span>
+            <span class="pill">위험도: <span class="sev low">Low</span></span>
+            <span class="pill">분류: (Unknown) / (Unknown)</span>
+          </div>
+          <p class="wrap">세부 내용은 Evidence 참조.</p>
+          <div class="evidence">{
+  &quot;redirect_uri&quot;: null
+}</div>
+          <div class='muted'>출처: authcode_report.json</div>
+        </div>
+        <div class="finding">
+          <h4 class="wrap">redirect_uri_safety <span class='tag'>redirect_uri_safety</span></h4>
+          <div class="meta">
+            <span class="pill">결과: <span class="pill"><span class="dot fail"></span> Fail</span></span>
+            <span class="pill">위험도: <span class="sev low">Low</span></span>
+            <span class="pill">분류: (Unknown) / (Unknown)</span>
+          </div>
+          <p class="wrap">HTTPS 강제(네이티브 loopback 예외)</p>
+          <div class="evidence">{
+  &quot;redirect_uri&quot;: &quot;http://ksj15.ddns.net/django/accounts/oidc/callback/&quot;
+}</div>
+          <div class='muted'>출처: second_oauthtool_report.json</div>
+        </div>
+        <div class="finding">
+          <h4 class="wrap">state_presence <span class='tag'>state_presence</span></h4>
+          <div class="meta">
+            <span class="pill">결과: <span class="pill"><span class="dot fail"></span> Fail</span></span>
+            <span class="pill">위험도: <span class="sev low">Low</span></span>
+            <span class="pill">분류: (Unknown) / (Unknown)</span>
+          </div>
+          <p class="wrap">고엔트로피/예측 불가</p>
+          
+          <div class='muted'>출처: authcode_report.json, second_oauthtool_report.json</div>
+        </div>
+  </section>
+</main>
+</body></html>

@@ -1,0 +1,115 @@
+{
+  "ok": false,
+  "failures": [
+    {
+      "code": "C1A",
+      "title": "Missing redirect_uri in authorization request",
+      "detail": "Authorization Request MUST include redirect_uri for registered clients.",
+      "evidence": {
+        "redirect_uri": null
+      }
+    },
+    {
+      "code": "C3",
+      "title": "Missing iss in authorization response (RFC 9207)",
+      "detail": "인가 응답에 'iss'를 포함해 발신자(AS)를 식별하고 Mix-Up을 방지하세요.",
+      "evidence": {
+        "observed_params": []
+      }
+    },
+    {
+      "code": "C6A",
+      "title": "Missing state",
+      "detail": "상관관계 강화를 위해 고엔트로피 state 사용.",
+      "evidence": null
+    },
+    {
+      "code": "C4",
+      "title": "PKCE missing",
+      "detail": "코드 플로우에 PKCE(S256) 필수.",
+      "evidence": {
+        "response_type": null
+      }
+    }
+  ],
+  "warnings": [
+    {
+      "code": "C4H",
+      "title": "Provider supports 'plain' PKCE",
+      "detail": "서버가 plain을 지원 — 다운그레이드 위험, S256만 허용하도록 구성 권장.",
+      "evidence": {
+        "discovery": [
+          "plain",
+          "S256"
+        ]
+      }
+    }
+  ],
+  "flow_type": "unknown",
+  "observed": {
+    "flow_type": "unknown",
+    "redirect_uri": null,
+    "response_mode": null,
+    "iss_in_response": false,
+    "issuer_from_discovery": "https://happy.songsings.site/kc/realms/web-service",
+    "pkce": {
+      "present": false,
+      "method": null
+    },
+    "token_request_keys": [],
+    "state_present": false,
+    "code_in_url": false
+  },
+  "checklist": {
+    "A": {
+      "redirect_uri_present": {
+        "result": "Fail",
+        "observed": {
+          "redirect_uri": null
+        }
+      },
+      "form_post_used": {
+        "result": "Advisory",
+        "note": "response_mode가 form_post 아님"
+      },
+      "iss_in_authorization_response": {
+        "result": "Fail",
+        "note": "discovery가 iss 지원을 광고함"
+      },
+      "iss_matches_discovery": {
+        "result": "Fail",
+        "note": "iss 부재 — discovery.issuer와 대조 불가",
+        "observed": {
+          "discovery_issuer": "https://happy.songsings.site/kc/realms/web-service"
+        }
+      },
+      "state_presence": {
+        "result": "Fail"
+      }
+    },
+    "B": {
+      "pkce_s256_in_request": {
+        "result": "Fail",
+        "note": "code_challenge 누락 또는 method≠S256"
+      },
+      "token_has_code_verifier": {
+        "result": "N/A"
+      },
+      "token_resent_redirect_uri": {
+        "result": "N/A"
+      }
+    },
+    "C": {
+      "front_channel_leak_risk": {
+        "result": "Pass"
+      },
+      "referer_leak_risk": {
+        "result": "N/A"
+      },
+      "jar_par_usage": {
+        "result": "Advisory",
+        "note": "서버가 PAR 제공 — 사용 권장"
+      }
+    }
+  }
+}

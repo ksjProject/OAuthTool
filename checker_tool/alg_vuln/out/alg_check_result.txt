@@ -28,4 +28,4 @@ Warnings:
  - [A5] [기타 수집 토큰(found)] HS* 알고리즘 사용 관찰 :: 동일 발행자 환경에서 HS ↔ RS/ES/PS 혼용은 구현 혼동 표면. :: evidence={'token_kind': 'found', 'alg': 'HS512'}
  - [A5] [기타 수집 토큰(found)] HS* 알고리즘 사용 관찰 :: 동일 발행자 환경에서 HS ↔ RS/ES/PS 혼용은 구현 혼동 표면. :: evidence={'token_kind': 'found', 'alg': 'HS512'}
  - [A6] [세션] 알고리즘 혼용 관찰 :: 관찰 집합: ['HS512', 'RS256'] :: evidence={'by_alg': {'HS512': ['found'], 'RS256': ['found']}}
- - [C2] [세션] 동일 발행자 내 알고리즘 혼용 관찰 :: 단일 핀닝 권장. :: evidence={'by_iss': {'https://happy.songsings.site/kc/realms/web-service': ['RS256', 'HS512']}}
+ - [C2] [세션] 동일 발행자 내 알고리즘 혼용 관찰 :: 단일 핀닝 권장. :: evidence={'by_iss': {'https://happy.songsings.site/kc/realms/web-service': ['HS512', 'RS256']}}
