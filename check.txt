@@ -1,3 +1,8 @@
+Token Exposure (Front-channel)
+    Token Exposure
+HIGH         URL 쿼리 내 토큰 노출 검사 (Query Token Leak)
+HIGH         Referer 헤더로 토큰 유출 검사 (Referer Token Leak)
+
 Client Secret
 	Client Secret
 HIGH		URL에 클라이언트 시크릿 노출 여부 검사 (Client Secret Query)
