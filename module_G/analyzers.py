@@ -189,7 +189,7 @@ class FrontChannelTokenLeakAnalyzer:
                 evidence = f"Request URL: {url}\nQuery param {k}={mask_secret(v)}"
                 findings.append(mkfind(
                     "5.0-QUERY-TOKEN",
-                    f"토큰({k})이 URL 쿼리에 포함됨",
+                    "Query Token Leak",                       # ← 영문 타이틀로 변경
                     "HIGH",
                     (
                         f"{k}은(는) 브라우저 주소창, 히스토리, 로그 등에 남아 제3자에게 노출될 수 있습니다. "
@@ -223,7 +223,7 @@ class FrontChannelTokenLeakAnalyzer:
                 )
                 findings.append(mkfind(
                     "5.0-REFERER-TOKEN",
-                    f"Referer로 토큰({k}) 유출",
+                    "Referer Token Leak",                     # ← 영문 타이틀로 변경
                     "HIGH",
                     (
                         f"페이지 간 이동 시 Referer에 {k}이(가) 포함되어 타 도메인(광고/분석/이미지 CDN 등)으로 "
@@ -232,7 +232,7 @@ class FrontChannelTokenLeakAnalyzer:
                     evidence,
                     (
                         "권장: URL에 토큰을 넣지 않기 + 'Referrer-Policy: no-referrer' 또는 "
-                        "'strict-origin-when-cross-origin' 설정, fragment/query 사용 금지."
+                        "'strict-origin-when-cross-origin' 설정."
                     )
                 ))
 
