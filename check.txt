@@ -1,7 +1,11 @@
 Token Exposure (Front-channel)
     Token Exposure
-HIGH         URL 쿼리 내 토큰 노출 검사 (Query Token Leak)
-HIGH         Referer 헤더로 토큰 유출 검사 (Referer Token Leak)
+HIGH         URL 쿼리 내 access_token 노출 (Query Token Leak_access_token))
+HIGH         URL 쿼리 내 id_token 노출 (Query Token Leak_id_token))
+HIGH         URL 쿼리 내 refresh_token 노출 (Query Token Leak_refresh_token)
+HIGH         Referer 내 access_token 유출 (Referer Token Leak_access_token)
+HIGH         Referer 내 id_token 유출 (Referer Token Leak_id_token)
+HIGH         Referer 내 refresh_token 유출 (Referer Token Leak_refresh_token)
 
 Client Secret
 	Client Secret
@@ -12,8 +16,8 @@ HIGH		세션 및 토큰 내 클라이언트 시크릿 존재 검사 (Session tok
 
 STATE
 	STATE
-MID		인가 요청 내 STATE 존재 확인 (State Missing)
-MID		STATE 엔트로피 검증 (State Low Entropy)
+MID		    인가 요청 내 STATE 존재 확인 (State Missing)
+MID		    STATE 엔트로피 검증 (State Low Entropy)
 HIGH		인가 요청시 STATE 재사용 가능 여부 검사 (State Reuse)
 HIGH		콜백 STATE 누락 검사 (Callback State Missing)
 HIGH		콜백 STATE 불일치 검사 (Callback State Mismatch)
